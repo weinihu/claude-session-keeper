@@ -5,3 +5,4 @@ config.json
 vault/
 *.pyc
 __pycache__/
+promo/
