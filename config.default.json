@@ -1,0 +1,12 @@
+{
+  "path_remaps": {},
+  "skip_scheduled": true,
+  "rebuild_orphans": true,
+  "snapshots_keep": 30,
+  "keep_rules": {
+    "enabled": false,
+    "max_age_days": 3,
+    "max_per_project": 2,
+    "always_keep": {}
+  }
+}

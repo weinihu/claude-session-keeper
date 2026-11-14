@@ -1,0 +1,82 @@
+<p align="center">
+  <img src="docs/icon.png" width="128" alt="图标">
+</p>
+
+<h1 align="center">Claude 换号恢复（Session Keeper for Claude）</h1>
+
+<p align="center">
+  <b>Claude 换号不丢对话。</b>切换账号后，Claude Code 的历史对话一键回来。<br>
+  一个很小的 macOS 工具，让 Code 标签页的对话跟着你走。
+</p>
+
+<p align="center">
+  <a href="../../releases/latest"><img src="https://img.shields.io/badge/下载-macOS-orange?logo=apple" alt="下载"></a>
+  <img src="https://img.shields.io/badge/macOS-14%2B-blue" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
+  <a href="README.md"><img src="https://img.shields.io/badge/docs-English-lightgrey" alt="English"></a>
+</p>
+
+<p align="center"><img src="docs/screenshot-zh.png" width="560" alt="截图"></p>
+
+## 遇到的问题
+
+你有好几个 Claude 账号，比如工作号和个人号、团队号和个人号。在 **Claude 桌面版**里每换一次号，**Code 标签页的侧边栏就空了**：之前的 Claude Code 对话、项目、历史记录全都"消失"，本地项目还得重新添加一遍。
+
+其实对话并没有被删掉，聊天记录都还在电脑上。只是 Claude **给每个账号单独保存一份侧边栏列表**。
+
+## 它能做什么
+
+- **换号后点一下就行：** 登录新账号大约一分钟后，会弹出"检测到你换了账号，现在恢复吗？"。点「现在恢复」，之前的对话就都回到侧边栏了，点进去可以接着聊，项目也不用重新添加。
+- **每分钟自动备份：** 就算你直接退出登录，对话列表也早就存好了。只有内容变了才会写入，只占几 MB。
+- **删掉的不会再回来：** 你在 Claude 里删掉的对话，会同时从所有账号里删除，以后也不会再恢复。
+- **保持整洁（可选）：** 可以设置"每个项目只保留最近 X 天内最新的 N 个对话"。恢复时只带这些过去，点「清理旧对话」时也按这个规则清理。
+- **项目搬过家也没关系：** 改了项目文件夹的名字或位置，对话会自动跟到新路径。
+- **安全：** 只读写本机文件，不联网，不碰登录信息、token 和账号设置。每次恢复和清理之前都会自动留一份快照，点「撤销上次操作」就能回到原样。
+
+## 安装
+
+1. 在 [Releases](../../releases/latest) 下载 **`SessionKeeper-macOS.zip`**，解压后把 App 拖进「应用程序」。
+2. 第一次打开：因为这个 App 没有经过 Apple 公证，需要 **右键 → 打开 → 打开**。也可以去「系统设置 → 隐私与安全性 → 仍要打开」。
+3. 装好了。自动备份会自己打开。
+
+> 需要 macOS 14 或更高版本、Claude 桌面版，以及 Python 3。Python 3 随 Apple 命令行工具一起提供；如果没有，在终端运行 `xcode-select --install`。
+
+## 怎么用
+
+| 什么时候 | 做什么 |
+|---|---|
+| 平时 | 什么都不用做，后台会自动备份 |
+| 换号之后 | 打开一次 **Code** 标签页，弹窗出来后点「现在恢复」，Claude 会在大约 10 秒内重启 |
+| 恢复后觉得不对 | 点「撤销上次操作」 |
+| 对话太多太乱 | 打开「只保留最近的对话」，再点「清理旧对话」 |
+
+## 原理
+
+| 内容 | 位置 | 所有账号共用吗 |
+|---|---|---|
+| 对话记录 | `~/.claude/projects/<项目>/<id>.jsonl` | ✅ 共用 |
+| 侧边栏列表 | `~/Library/Application Support/Claude/claude-code-sessions/<账号>/<组织>/local_*.json` | ❌ 每个账号一份 |
+
+本工具会把侧边栏列表备份到本地保险库 `~/.claude/session-vault/`。换号后，在 Claude 退出的状态下，把这些列表条目写进新账号的列表。如果某段旧对话在任何列表里都找不到，就根据对话记录重新生成一条。
+
+命令行用法和配置项见 [English README](README.md#how-it-works)。
+
+## 常见问题
+
+**会影响我的 Claude 账号吗？** 不会。它只读写你 Mac 上的本地文件，不会往外发送任何数据。
+
+**Claude Code 命令行版也需要吗？** 不需要。命令行版本来就在所有登录之间共用 `~/.claude`。这个工具是给**桌面版的 Code 标签页**用的，它的侧边栏是每个账号一份。
+
+**Claude 更新后还能用吗？** 侧边栏的格式没有官方说明，有可能会失效。有快照和「撤销上次操作」兜底，不会丢东西。欢迎提 Issue 或 PR。
+
+## 声明
+
+本项目与 Anthropic 无关，也未获得 Anthropic 认可。"Claude" 是 Anthropic, PBC 的商标。本工具读写的是 Claude 桌面版没有公开文档的本地文件，请自行承担使用风险。
+
+## 开源协议
+
+[MIT](LICENSE)
+
+---
+
+<sub>关键词：Claude 换号 · Claude 多账号 · 切换账号对话消失 · Claude Code 历史对话恢复 · Claude Code 对话丢失 · Claude 桌面版 Code 侧边栏空了 · Claude 账号切换 · Claude Code 会话备份</sub>
