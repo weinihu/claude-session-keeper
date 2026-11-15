@@ -41,6 +41,10 @@
 
 > 需要 macOS 14 或更高版本、Claude 桌面版，以及 Python 3。Python 3 随 Apple 命令行工具一起提供；如果没有，在终端运行 `xcode-select --install`。
 
+### Windows 预览版
+
+实验性 Windows 界面和共享核心代码位于 `codex/windows-preview-source` 分支，目前还没有安装包。它没有在真实的 Windows Claude Desktop 环境中验证，侧栏数据位置和格式可能不同，请勿把它当作唯一备份。
+
 ## 怎么用
 
 | 什么时候 | 做什么 |
@@ -68,6 +72,8 @@
 **Claude Code 命令行版也需要吗？** 不需要。命令行版本来就在所有登录之间共用 `~/.claude`。这个工具是给**桌面版的 Code 标签页**用的，它的侧边栏是每个账号一份。
 
 **Claude 更新后还能用吗？** 侧边栏的格式没有官方说明，有可能会失效。有快照和「撤销上次操作」兜底，不会丢东西。欢迎提 Issue 或 PR。
+
+**Windows 版能用吗？** Windows 预览源码在 `codex/windows-preview-source` 分支，目前没有安装包，也没有在真实的 Windows Claude Desktop 环境中验证。Linux 暂不支持。
 
 ## 声明
 

@@ -42,6 +42,10 @@ They aren't actually gone. The transcripts are still on disk. Claude just keeps 
 
 > Requires macOS 14+, the Claude desktop app, and Python 3. Python 3 ships with Apple's Command Line Tools; if it's missing, run `xcode-select --install`.
 
+### Windows preview
+
+An experimental Windows UI and shared-core adaptation are available on the `codex/windows-preview-source` branch. No Windows installer is published yet. This preview has not been tested with a live Claude Desktop installation; the Windows sidebar data location and format may differ. Do not rely on it as your only backup.
+
 ## How to use
 
 | When | What to do |
@@ -104,7 +108,7 @@ cd claude-session-keeper
 
 **Can it break after a Claude update?** The sidebar format isn't documented, so it might. Snapshots and **Undo** keep you safe, and issues and PRs are welcome.
 
-**Windows / Linux?** Not yet. PRs welcome.
+**Windows / Linux?** Windows preview source is available on the `codex/windows-preview-source` branch, but it has no installer and has not been validated against Claude Desktop on Windows. Linux is not supported yet.
 
 ## Disclaimer
 
