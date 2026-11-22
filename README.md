@@ -17,7 +17,7 @@
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/文档-中文-red" alt="中文"></a>
 </p>
 
-<p align="center"><img src="docs/screenshot-en.png" width="560" alt="Screenshot"></p>
+<p align="center"><img src="docs/screenshot-en.png" width="720" alt="Screenshot"></p>
 
 ## The problem
 
@@ -90,6 +90,8 @@ Settings live in `~/.claude/session-vault/config.json`:
 </details>
 
 ## Usage by account
+
+<p align="center"><img src="docs/screenshot-usage-en.png" width="720" alt="Usage by account"></p>
 
 The Claude app writes the signed-in account's plan usage to `~/Library/Application Support/Claude/plan-usage-history.json` (5-hour % and weekly %). Session Keeper reads that file, keeps a longer history in the vault, and shows every account side by side:
 

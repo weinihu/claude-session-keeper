@@ -2,7 +2,7 @@
   <img src="docs/icon.png" width="128" alt="图标">
 </p>
 
-<h1 align="center">Claude 换号恢复（Session Keeper for Claude）</h1>
+<h1 align="center">Claude 多账号管家（Session Keeper for Claude）</h1>
 
 <p align="center">
   <b>Claude 换号不丢对话。</b>切换账号后，Claude Code 的历史对话一键回来。<br>
@@ -16,7 +16,7 @@
   <a href="README.md"><img src="https://img.shields.io/badge/docs-English-lightgrey" alt="English"></a>
 </p>
 
-<p align="center"><img src="docs/screenshot-zh.png" width="560" alt="截图"></p>
+<p align="center"><img src="docs/screenshot-zh.png" width="720" alt="截图"></p>
 
 ## 遇到的问题
 
