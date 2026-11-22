@@ -244,7 +244,7 @@ class App:
         self.log_lines = []
         self.inbox = queue.Queue()          # results from worker threads, applied on the Tk thread
         root.title(tr("Claude 换号助手", "Session Keeper for Claude"))
-        root.geometry("980x660")
+        root.geometry("1000x700")
         root.minsize(900, 600)
         root.configure(bg=BG)
         icon = Path(getattr(sys, "_MEIPASS", ROOT_DIR / "app")) / "icon.png"
@@ -258,7 +258,7 @@ class App:
             except tk.TclError:
                 self.icon_img = None
 
-        self.sidebar = tk.Frame(root, bg=SIDEBAR, width=210)
+        self.sidebar = tk.Frame(root, bg=SIDEBAR, width=230)
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
         self.content = tk.Frame(root, bg=BG)
@@ -331,7 +331,7 @@ class App:
             tk.Label(head, image=self.icon_img, bg=SIDEBAR).pack(side="left", padx=(0, 10))
         t = tk.Frame(head, bg=SIDEBAR)
         t.pack(side="left")
-        label(t, tr("Claude 换号助手", "Session Keeper"), 11, "bold", bg=SIDEBAR).pack(anchor="w")
+        label(t, tr("Claude 换号助手", "Session Keeper"), 10, "bold", bg=SIDEBAR).pack(anchor="w")
         label(t, tr("对话不丢 · 额度清楚", "for Claude"), 8, color=MUTED, bg=SIDEBAR).pack(anchor="w")
 
         for key, zh, en, glyph in PAGES:
@@ -490,58 +490,72 @@ class App:
             label(lg, "\n".join(self.log_lines[-8:]), 9, color=MUTED, wraplength=640).pack(anchor="w", padx=16, pady=(0, 12))
 
     def page_usage(self, p):
-        self.header(p, tr("额度", "Usage"), tr("每个账号的 5 小时额度和每周额度", "5-hour and weekly limits for every account"),
+        self.header(p, tr("额度", "Usage"),
+                    tr("每个账号的 5 小时额度和每周额度，以及下一次重置时间", "5-hour and weekly limits, and when each resets"),
                     (tr("⟳ 刷新", "⟳ Refresh"), self.refresh))
-        lst = card(p)
-        lst.pack(fill="x")
-        hd = tk.Frame(lst, bg="#FAF8F6")
-        hd.pack(fill="x")
-        label(hd, tr("账号", "Account"), 9, color=MUTED, bg="#FAF8F6").pack(side="left", padx=16, pady=8)
-        for t in (tr("每周", "Weekly"), tr("5 小时", "5-hour")):
-            label(hd, t, 9, color=MUTED, bg="#FAF8F6", width=20).pack(side="right", padx=(0, 8))
         if not self.accounts():
-            label(lst, tr("还没有额度记录。在 Claude 里打开一次 Code 标签页后点刷新。",
-                          "No usage recorded yet. Open the Code tab in Claude once, then Refresh."),
+            c = card(p)
+            c.pack(fill="x")
+            label(c, tr("还没有额度记录。在 Claude 里打开一次 Code 标签页后点刷新。",
+                        "No usage recorded yet. Open the Code tab in Claude once, then Refresh."),
                   10, color=MUTED).pack(anchor="w", padx=16, pady=14)
         for a in self.accounts():
-            tk.Frame(lst, bg=BORDER, height=1).pack(fill="x")
-            bgc = "#FFFAF7" if a.get("current") else CARD
-            r = tk.Frame(lst, bg=bgc)
-            r.pack(fill="x")
-            inner = tk.Frame(r, bg=bgc)
-            inner.pack(fill="x", padx=16, pady=11)
-            avatar(inner, "?" if not a.get("email") and not a.get("named") else self.title_of(a), 34, bg=bgc).pack(side="left")
-            t = tk.Frame(inner, bg=bgc)
+            cur = a.get("current")
+            c = tk.Frame(p, bg=CARD, highlightbackground=BRAND if cur else BORDER,
+                         highlightthickness=2 if cur else 1)
+            c.pack(fill="x", pady=(0, 12))
+            top = tk.Frame(c, bg=CARD)
+            top.pack(fill="x", padx=16, pady=(14, 10))
+            avatar(top, "?" if not a.get("email") and not a.get("named") else self.title_of(a), 36).pack(side="left")
+            t = tk.Frame(top, bg=CARD)
             t.pack(side="left", padx=10)
-            tr_ = tk.Frame(t, bg=bgc)
-            tr_.pack(anchor="w")
-            nm = label(tr_, self.title_of(a) + "  ✎", 10, "bold", bg=bgc, cursor="hand2")
+            row = tk.Frame(t, bg=CARD)
+            row.pack(anchor="w")
+            nm = label(row, self.title_of(a) + "  ✎", 11, "bold", cursor="hand2")
             nm.pack(side="left")
             nm.bind("<Button-1>", lambda e, acc=a: self.rename(acc))
-            if a.get("current"):
-                tag(tr_, tr("当前", "Current"), bg=bgc).pack(side="left", padx=6)
-            label(t, self.sub_of(a), 9, color=MUTED if a.get("named") else FAINT, bg=bgc).pack(anchor="w")
-            label(t, (tr("更新于 ", "as of ") + short_time(a.get("updatedAt"))) if a.get("updatedAt") else
-                  tr("暂无用量记录", "no usage yet"), 8, color=FAINT, bg=bgc).pack(anchor="w")
-            def note_of(r, idle):
-                if not r:
-                    return idle
-                return f"{r['when']} · {r['week']} · {r['in']}" + ("" if r.get("exact") else tr("（估计）", " (est.)"))
-            for v, est, note in (
-                    (a.get("weekly"), a.get("weeklyEstimated"),
-                     note_of(a.get("weeklyReset"), tr("重置时间未知", "reset unknown") if a.get("weekly") is not None else "")),
-                    (a.get("fiveHour"), a.get("fiveHourEstimated"),
-                     note_of(a.get("fiveHourReset"), tr("现在可用", "available now") if a.get("fiveHour") is not None else ""))):
-                cell = tk.Frame(inner, bg=bgc, width=260)
-                cell.pack(side="right", padx=(8, 0))
-                line = tk.Frame(cell, bg=bgc)
-                line.pack(anchor="w")
-                bar(line, v, 80, est, bg=bgc).pack(side="left")
-                label(line, "—" if v is None else f"{v}%", 10, "bold", color=MUTED if est else TEXT, bg=bgc, width=5).pack(side="left", padx=6)
-                label(cell, note or " ", 8, color=MUTED, bg=bgc).pack(anchor="w")
-        label(p, "ⓘ " + tr("数据来自 Claude 在本机记录的用量和账号信息，不联网、不读取 token。只有当前登录的账号会更新；没有邮箱的账号，下次登录时会自动识别。恢复时间是估计值。",
-                          "Read from the usage and account info Claude keeps on this computer — no network, no tokens. Only the signed-in account updates. Reset times are estimates."),
-              9, color=MUTED, bg=BG, wraplength=660).pack(anchor="w", pady=(12, 0))
+            if cur:
+                tag(row, tr("当前登录", "Signed in")).pack(side="left", padx=8)
+            label(t, self.sub_of(a), 9, color=MUTED if a.get("named") else FAINT).pack(anchor="w")
+            label(top, (tr("用量更新于 ", "usage as of ") + short_time(a.get("updatedAt"))) if a.get("updatedAt")
+                  else tr("暂无用量记录", "no usage yet"), 8, color=FAINT).pack(side="right", anchor="n")
+
+            blocks = tk.Frame(c, bg=CARD)
+            blocks.pack(fill="x", padx=16, pady=(0, 14))
+            blocks.columnconfigure(0, weight=1, uniform="b")
+            blocks.columnconfigure(1, weight=1, uniform="b")
+            specs = [
+                (tr("5 小时额度", "5-hour limit"), a.get("fiveHour"), a.get("fiveHourEstimated"), a.get("fiveHourReset"),
+                 tr("下次恢复", "Resets"),
+                 tr("现在可用 · 开始使用后 5 小时内恢复", "Available · resets 5 h after you start")
+                 if a.get("fiveHour") is not None else tr("暂无数据", "no data")),
+                (tr("每周额度", "Weekly limit"), a.get("weekly"), a.get("weeklyEstimated"), a.get("weeklyReset"),
+                 tr("下次重置", "Resets"),
+                 tr("重置时间未知 · 碰到一次每周限额后就能算准", "Unknown until the weekly limit is hit once")
+                 if a.get("weekly") is not None else tr("暂无数据", "no data")),
+            ]
+            for col, (title, v, est, r, word, idle) in enumerate(specs):
+                b = tk.Frame(blocks, bg="#F8F6F4")
+                b.grid(row=0, column=col, sticky="nsew", padx=(0, 10) if col == 0 else (10, 0))
+                head = tk.Frame(b, bg="#F8F6F4")
+                head.pack(fill="x", padx=12, pady=(10, 4))
+                label(head, title, 10, "bold", bg="#F8F6F4").pack(side="left")
+                label(head, "—" if v is None else f"{v}%", 15, "bold", bg="#F8F6F4",
+                      color=MUTED if (v is None or est) else usage_color(v)).pack(side="right")
+                bar(b, v, 300, est, bg="#F8F6F4").pack(anchor="w", padx=12)
+                if r:
+                    line = tk.Frame(b, bg="#F8F6F4")
+                    line.pack(anchor="w", padx=12, pady=(6, 0))
+                    label(line, f"{word} {r['when']}", 9, "bold", bg="#F8F6F4").pack(side="left")
+                    ok = r.get("exact")
+                    tk.Label(line, text=tr("精确", "exact") if ok else tr("估计", "est."), font=font(7, "bold"),
+                             fg="#3E9B52" if ok else MUTED, bg="#E3F3E6" if ok else "#ECE8E4", padx=4).pack(side="left", padx=6)
+                    label(b, f"{r['week']} · {r['in']}", 9, color=MUTED, bg="#F8F6F4").pack(anchor="w", padx=12, pady=(2, 10))
+                else:
+                    label(b, idle, 9, color=MUTED, bg="#F8F6F4", wraplength=300).pack(anchor="w", padx=12, pady=(6, 10))
+        label(p, "ⓘ " + tr("数据来自 Claude 在本机的记录，不联网、不读取 token：用量来自 Claude App，邮箱和精确的重置时间来自 Claude Code 的对话记录。标「精确」的是 Claude 自己给出的时间，标「估计」的是推算的。",
+                          "Everything comes from Claude's own records on this computer — no network, no tokens. \"Exact\" times were reported by Claude; \"est.\" ones are inferred."),
+              9, color=MUTED, bg=BG, wraplength=640).pack(anchor="w", pady=(4, 0))
 
     def page_chats(self, p):
         self.header(p, tr("对话", "Chats"), tr("备份、恢复和整理 Claude Code 的对话列表", "Back up, restore and tidy your Claude Code chats"))
