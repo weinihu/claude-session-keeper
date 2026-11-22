@@ -21,12 +21,32 @@ struct Status: Decodable {
     let currentAccount: String?
     let claudeRunning: Bool
     let accounts: [Account]
+    let orgCount: Int?
     let vaultSessions: Int
     let orphans: Int
     let vaultBytes: Int
     let autoBackup: Bool
     let lastBackupAt: Double?
     let canUndo: Bool
+}
+
+struct Usage: Decodable {
+    struct Account: Decodable, Identifiable {
+        let org: String
+        let name: String
+        let named: Bool
+        let current: Bool
+        let updatedAt: Double
+        let fiveHour: Int?
+        let fiveHourEstimated: Bool
+        let fiveHourResetAt: Double?
+        let weekly: Int?
+        let weeklyEstimated: Bool
+        let weeklyResetAt: Double?
+        var id: String { org }
+    }
+    let accounts: [Account]
+    let sourceFound: Bool
 }
 
 struct KeepRules: Equatable {
@@ -49,6 +69,10 @@ final class Model: ObservableObject {
     @Published var pruneSummary = ""
     @Published var pruneCount = 0
     @Published var rules = KeepRules()
+    @Published var usage: Usage?
+    @Published var renameOrg: String?
+    @Published var renameText = ""
+    @Published var showRename = false
 
     // MARK: install / python
 
@@ -98,6 +122,7 @@ final class Model: ObservableObject {
         if code == 0, let s = try? JSONDecoder().decode(Status.self, from: Data(out.utf8)) {
             status = s; error = nil
             loadRules()
+            await loadUsage()
             checkPendingSwitch()
         } else if out.contains("xcode-select") || out.contains("developer tools") {
             error = L("需要先安装 Apple 命令行工具：在终端运行 xcode-select --install，装好后重新打开本 App。",
@@ -105,6 +130,25 @@ final class Model: ObservableObject {
         } else {
             error = L("读取状态失败：\n", "Couldn't read status:\n") + out
         }
+    }
+
+    // MARK: usage (read from the Claude app's own local record — no network, no tokens)
+
+    func loadUsage() async {
+        let (code, out) = await python(["usage", "--json"])
+        if code == 0, let u = try? JSONDecoder().decode(Usage.self, from: Data(out.utf8)) { usage = u }
+    }
+
+    func startRename(_ a: Usage.Account) {
+        renameOrg = a.org
+        renameText = a.named ? a.name : ""
+        showRename = true
+    }
+
+    func saveRename() async {
+        guard let org = renameOrg else { return }
+        _ = await python(["usage", "--rename", org, renameText])
+        await loadUsage()
     }
 
     // MARK: keep rules (stored in the vault's config.json)
@@ -237,6 +281,8 @@ struct ContentView: View {
                 Text(e).foregroundStyle(.red).font(.callout).textSelection(.enabled)
             }
 
+            usageCard
+
             if let s = m.status { statusCard(s) }
 
             Button {
@@ -316,6 +362,93 @@ struct ContentView: View {
         }
     }
 
+    var usageCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(L("各账号额度", "Usage by account")).font(.headline)
+                Spacer()
+                Button {
+                    Task { await m.loadUsage() }
+                } label: { Label(L("刷新", "Refresh"), systemImage: "arrow.clockwise") }
+                    .controlSize(.small)
+            }
+            if let u = m.usage, !u.accounts.isEmpty {
+                ForEach(u.accounts) { a in usageRow(a) }
+                Text(L("数据来自 Claude App 在本机记录的用量。只有当前登录的账号会更新，其他账号显示最后一次登录时的情况；恢复时间是估计值。",
+                       "Read from the usage the Claude app records on this Mac. Only the signed-in account updates; others show their last known state. Reset times are estimates."))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(L("还没有额度记录。在 Claude 里打开一次 Code 标签页后点刷新。",
+                       "No usage recorded yet. Open the Code tab in Claude once, then press Refresh."))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
+        .alert(L("给这个账号起个名字", "Name this account"), isPresented: $m.showRename) {
+            TextField(L("例如：工作号", "e.g. Work"), text: $m.renameText)
+            Button(L("保存", "Save")) { Task { await m.saveRename() } }
+            Button(L("取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(L("方便你分清是哪个号。只保存在本机。", "So you can tell accounts apart. Stored on this Mac only."))
+        }
+    }
+
+    func usageRow(_ a: Usage.Account) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Button { m.startRename(a) } label: {
+                    HStack(spacing: 4) {
+                        Text(a.name).fontWeight(.semibold)
+                        Image(systemName: "pencil").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+                .buttonStyle(.plain)
+                if a.current {
+                    Text(L("当前", "current")).font(.caption2.bold())
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(Color.orange.opacity(0.2))).foregroundStyle(.orange)
+                }
+                Spacer()
+                Text(L("更新于 ", "as of ") + shortTime(a.updatedAt)).font(.caption).foregroundStyle(.secondary)
+            }
+            meter(L("5 小时", "5-hour"), a.fiveHour, estimated: a.fiveHourEstimated,
+                  note: a.fiveHourResetAt.map { L("最晚 \(shortTime($0)) 恢复", "resets by \(shortTime($0))") }
+                      ?? (a.fiveHourEstimated ? L("已过 5 小时，应已恢复", "over 5 h ago — should be reset") : nil))
+            meter(L("每周", "Weekly"), a.weekly, estimated: a.weeklyEstimated,
+                  note: a.weeklyResetAt.map { L("约 \(shortTime($0)) 重置", "resets ~\(shortTime($0))") }
+                      ?? (a.weeklyEstimated ? L("应已重置", "should be reset") : nil))
+        }
+        .padding(.vertical, 4)
+    }
+
+    func meter(_ label: String, _ value: Int?, estimated: Bool, note: String?) -> some View {
+        let v = Double(value ?? 0) / 100
+        let color: Color = v >= 0.9 ? .red : (v >= 0.6 ? .orange : .green)
+        return HStack(spacing: 8) {
+            Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 46, alignment: .leading)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.secondary.opacity(0.18))
+                Capsule().fill(color.opacity(estimated ? 0.45 : 1))
+                    .frame(width: max(value == nil ? 0 : 6, 150 * min(max(v, 0), 1)))
+            }
+            .frame(width: 150, height: 7)
+            Text(value.map { "\($0)%" } ?? "—").font(.caption.monospacedDigit())
+                .foregroundStyle(estimated ? .secondary : .primary).frame(width: 40, alignment: .trailing)
+            if let n = note { Text(n).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+        }
+    }
+
+    func shortTime(_ ms: Double) -> String {
+        let d = Date(timeIntervalSince1970: ms / 1000)
+        let f = DateFormatter()
+        f.locale = Locale(identifier: isZH ? "zh_CN" : "en_US")
+        f.dateFormat = Calendar.current.isDateInToday(d) ? "HH:mm" : (isZH ? "M月d日 HH:mm" : "MMM d HH:mm")
+        return f.string(from: d)
+    }
+
     var rulesCard: some View {
         let r = m.rules
         return VStack(alignment: .leading, spacing: 8) {
@@ -346,7 +479,7 @@ struct ContentView: View {
         return Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
             row(L("当前账号", "Current account"), (s.currentAccount.map { String($0.prefix(8)) + "…" } ?? L("未知", "unknown"))
                 + L("（列表里 \(cur?.sessions ?? 0) 个对话）", "  (\(cur?.sessions ?? 0) chats in sidebar)"))
-            row(L("本机登录过的账号", "Accounts on this Mac"), L("\(s.accounts.count) 个", "\(s.accounts.count)"))
+            row(L("本机登录过的账号", "Accounts on this Mac"), L("\(s.orgCount ?? s.accounts.count) 个", "\(s.orgCount ?? s.accounts.count)"))
             row(L("已备份的对话", "Chats in vault"), L("\(s.vaultSessions) 个", "\(s.vaultSessions)")
                 + (s.orphans > 0 ? L("，另有 \(s.orphans) 个旧对话恢复时会重建", ", plus \(s.orphans) older ones to rebuild") : ""))
             row(L("备份占用空间", "Vault size"), ByteCountFormatter.string(fromByteCount: Int64(s.vaultBytes), countStyle: .file))

@@ -28,6 +28,7 @@ They aren't actually gone. The transcripts are still on disk. Claude just keeps 
 ## What it does
 
 - **One click after switching:** about a minute after you sign in to another account, a prompt asks *"You switched accounts. Restore now?"*. Click it and every previous chat shows up in the sidebar, ready to continue. Your projects are still there.
+- **Usage for every account:** see each account's **5-hour** and **weekly** limit usage, with estimated reset times, in one place, and give accounts names like "Work" or "Personal". The numbers come from the usage the Claude app already records on your Mac; nothing is fetched online.
 - **Automatic backup every minute:** your chat lists are always saved, even if you sign out without thinking about it. It writes only when something changed, so it uses a few MB.
 - **Deleted stays deleted:** chats you delete in Claude are removed from every account and never come back.
 - **Keep it tidy (optional):** "keep only the newest N chats from the last X days per project", applied on restore and by the **Clean up** button.
@@ -88,6 +89,16 @@ Settings live in `~/.claude/session-vault/config.json`:
 ```
 </details>
 
+## Usage by account
+
+The Claude app writes the signed-in account's plan usage to `~/Library/Application Support/Claude/plan-usage-history.json` (5-hour % and weekly %). Session Keeper reads that file, keeps a longer history in the vault, and shows every account side by side:
+
+- **Only the signed-in account updates.** Other accounts show their state from the last time you used them. If that was more than 5 hours ago, the 5-hour limit is shown as reset (estimated).
+- **Reset times are estimates.** The 5-hour reset comes from when continuous usage started. The weekly reset is 7 days after the first usage following a reset.
+- **Refresh** re-reads the local file. To update another account, sign in to it and use Claude as usual.
+
+It never calls Anthropic's servers, never reads tokens, and doesn't change or work around any limits. It only shows what the app already recorded.
+
 ## Build from source
 
 ```bash
@@ -103,6 +114,8 @@ cd claude-session-keeper
 **Does it work with the Claude Code CLI?** The CLI already shares `~/.claude` across logins. This tool is for the **desktop app's Code tab**, where the sidebar is per account.
 
 **Can it break after a Claude update?** The sidebar format isn't documented, so it might. Snapshots and **Undo** keep you safe, and issues and PRs are welcome.
+
+**Why does an account show old numbers?** Usage is only recorded while that account is signed in. Sign in and open the Code tab, then press **Refresh**.
 
 **Windows / Linux?** Not yet. PRs welcome.
 

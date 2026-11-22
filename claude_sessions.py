@@ -790,6 +790,7 @@ def status_data():
         "currentAccount": acc_now,
         "claudeRunning": app_running(),
         "accounts": accounts,
+        "orgCount": len({x["org"] for x in accounts}),
         "vaultSessions": len(vault),
         "transcripts": len(transcripts),
         "orphans": len([c for c in transcripts if c not in known]),
@@ -855,6 +856,10 @@ def cmd_auto(args):
     trim_log()
     cfg = tool_config()
     vault = cmd_backup(args, quiet=True)
+    try:
+        merge_usage()
+    except Exception:
+        pass
     with open(os.path.join(VAULT, "last-run"), "w"):
         pass
     acc = current_account()
@@ -882,6 +887,124 @@ def cmd_auto(args):
     if missing and not getattr(args, "no_open", False):
         write_json(PENDING_FILE, {"account": acc, "missing": missing, "at": int(time.time() * 1000)})
         subprocess.run(["open", "-b", GUI_BUNDLE_ID], capture_output=True)
+
+
+# ---------------------------------------------------------------- usage (quota status)
+# The Claude app itself records the current account's plan usage in plan-usage-history.json:
+#   {"t": ms, "org": orgUuid, "u": {"fh": five-hour %, "sd": seven-day %}}
+# We only read that local file (no network, no tokens) and keep a longer history in the vault,
+# because the app keeps just the most recent samples.
+USAGE_SRC = os.environ.get("CSV_USAGE_SRC") or os.path.join(APP_DIR, "plan-usage-history.json")
+USAGE_HIST = os.path.join(VAULT, "usage-history.json")
+ACCOUNTS_FILE = os.path.join(VAULT, "accounts.json")
+FIVE_H = 5 * 3600 * 1000
+WEEK = 7 * 86400 * 1000
+
+
+def merge_usage():
+    """Merge the app's samples into the vault history. Returns the merged, time-sorted list."""
+    hist = (load_json(USAGE_HIST, {}) or {}).get("samples", [])
+    src = (load_json(USAGE_SRC, {}) or {}).get("samples", [])
+    seen = {(x.get("t"), x.get("org")) for x in hist}
+    new = [x for x in src if isinstance(x, dict) and x.get("org") and (x.get("t"), x.get("org")) not in seen]
+    if new:
+        hist = sorted(hist + new, key=lambda x: x.get("t") or 0)[-20000:]
+        write_json(USAGE_HIST, {"version": 1, "samples": hist})
+    return sorted(hist, key=lambda x: x.get("t") or 0)
+
+
+def account_names():
+    return load_json(ACCOUNTS_FILE, {}) or {}
+
+
+def usage_data(now_ms=None):
+    """Per-account quota status, with estimates for when limits reset."""
+    now = now_ms or int(time.time() * 1000)
+    samples = merge_usage()
+    names = account_names()
+    by_org = {}
+    for x in samples:
+        u = x.get("u") or {}
+        if "fh" in u or "sd" in u:
+            by_org.setdefault(x["org"], []).append(x)
+    current = samples[-1]["org"] if samples else None
+    out = []
+    for i, (org, xs) in enumerate(sorted(by_org.items(), key=lambda kv: kv[0])):
+        last = xs[-1]
+        fh, sd, t = last["u"].get("fh"), last["u"].get("sd"), last["t"]
+        # five-hour window: a sample older than 5 h means that window is over for sure
+        fh_reset_at, fh_now, fh_est = None, fh, False
+        if fh is not None:
+            if now - t >= FIVE_H:
+                fh_now, fh_est = 0, True
+            elif fh > 0:
+                start = t                       # earliest sample of the current run of usage
+                for y in reversed(xs[:-1]):
+                    if (y["u"].get("fh") or 0) == 0 or start - y["t"] >= FIVE_H:
+                        break
+                    start = y["t"]
+                fh_reset_at = start + FIVE_H    # the window began at or before `start`
+        # weekly window: it starts at the first usage after a reset (0 % or a clear drop).
+        # `start` is the earliest sample we know is inside the current window, so the
+        # window resets at the latest start + 7 days.
+        sd_reset_at, sd_now, sd_est, start, prev = None, sd, False, None, None
+        for y in xs:
+            v = y["u"].get("sd")
+            if v is None:
+                continue
+            if v == 0:
+                start = None
+            elif start is None or (prev is not None and v < prev - 10):
+                start = y["t"]
+            prev = v
+        if start is not None:
+            sd_reset_at = start + WEEK
+            if now >= sd_reset_at:
+                sd_now, sd_est, sd_reset_at = 0, True, None
+        out.append({
+            "org": org,
+            "name": (names.get(org) or {}).get("name") or T(f"账号 {i + 1}", f"Account {i + 1}"),
+            "named": bool((names.get(org) or {}).get("name")),
+            "current": org == current,
+            "updatedAt": t,
+            "fiveHour": fh_now, "fiveHourEstimated": fh_est, "fiveHourResetAt": fh_reset_at,
+            "weekly": sd_now, "weeklyEstimated": sd_est, "weeklyResetAt": sd_reset_at,
+            "samples": len(xs),
+        })
+    return {"now": now, "current": current, "accounts": out, "source": USAGE_SRC,
+            "sourceFound": os.path.exists(USAGE_SRC)}
+
+
+def cmd_usage(args):
+    if args.rename:
+        org, name = args.rename
+        names = account_names()
+        names.setdefault(org, {})["name"] = name.strip()
+        if not name.strip():
+            names.pop(org, None)
+        write_json(ACCOUNTS_FILE, names)
+    data = usage_data()
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False))
+        return
+    if not data["accounts"]:
+        print(T("还没有额度记录。在 Claude 里打开一次 Code 标签页后再看。",
+                "No usage recorded yet. Open the Code tab in Claude once, then check again."))
+        return
+
+    def pct(v, est):
+        return "?" if v is None else f"{v}%" + (T("（估计）", " (est.)") if est else "")
+
+    for a in data["accounts"]:
+        mark = T("  <- 当前", "  <- current") if a["current"] else ""
+        print(f"{a['name']} [{a['org'][:8]}]{mark}")
+        print(T("  5 小时：", "  5-hour: ") + pct(a["fiveHour"], a["fiveHourEstimated"])
+              + (T(f"，最晚约 {fmt_ms(a['fiveHourResetAt'])} 恢复", f", resets by ~{fmt_ms(a['fiveHourResetAt'])}")
+                 if a["fiveHourResetAt"] else ""))
+        print(T("  每周：  ", "  Weekly: ") + pct(a["weekly"], a["weeklyEstimated"])
+              + (T(f"，约 {fmt_ms(a['weeklyResetAt'])} 重置", f", resets ~{fmt_ms(a['weeklyResetAt'])}")
+                 if a["weeklyResetAt"] else ""))
+        print(T(f"  数据时间：{fmt_ms(a['updatedAt'])}", f"  as of: {fmt_ms(a['updatedAt'])}"))
 
 
 # ---------------------------------------------------------------- launchd
@@ -954,13 +1077,16 @@ def main():
     sp.add_argument("--force", action="store_true")
     sp = sub.add_parser("install-agent", help="安装后台自动备份 + 换号检测")
     sp.add_argument("--seconds", type=int, default=60)
+    sp = sub.add_parser("usage", help="各账号额度（5 小时 / 每周）")
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--rename", nargs=2, metavar=("ORG", "NAME"), help="给账号起个名字")
     sp = sub.add_parser("auto", help="后台任务：备份 + 检测换号")
     sp.add_argument("--no-open", action="store_true", help="检测到换号时不打开界面（测试用）")
     sub.add_parser("uninstall-agent", help="卸载后台定时自动备份")
     args = p.parse_args()
     {"backup": cmd_backup, "restore": cmd_restore, "sync": cmd_sync, "status": cmd_status,
      "install-agent": cmd_install_agent, "uninstall-agent": cmd_uninstall_agent,
-     "rollback": cmd_rollback, "auto": cmd_auto, "prune": cmd_prune}[args.cmd](args)
+     "rollback": cmd_rollback, "auto": cmd_auto, "prune": cmd_prune, "usage": cmd_usage}[args.cmd](args)
 
 
 if __name__ == "__main__":
