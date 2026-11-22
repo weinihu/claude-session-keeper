@@ -43,9 +43,13 @@ They aren't actually gone. The transcripts are still on disk. Claude just keeps 
 
 > Requires macOS 14+, the Claude desktop app, and Python 3. Python 3 ships with Apple's Command Line Tools; if it's missing, run `xcode-select --install`.
 
-### Windows preview
+### Windows (beta)
 
-An experimental Windows UI and shared-core adaptation are available on the `codex/windows-preview-source` branch. No Windows installer is published yet. This preview has not been tested with a live Claude Desktop installation; the Windows sidebar data location and format may differ. Do not rely on it as your only backup.
+1. Download **`SessionKeeper-Windows.zip`** from [Releases](../../releases/latest) and unzip it anywhere, keeping both `.exe` files together.
+2. Run **SessionKeeper.exe**. If Windows SmartScreen warns you, click *More info → Run anyway* (the app isn't code-signed).
+3. If it can't find Claude's data, open **Settings** and choose the folder that contains `claude-code-sessions` and `config.json`.
+
+The Windows build is new and hasn't been tested against every Claude Desktop install yet. Snapshots and **Undo** still protect you.
 
 ## How to use
 
@@ -124,7 +128,7 @@ cd claude-session-keeper
 
 **Why does an account show old numbers?** Usage is only recorded while that account is signed in. Sign in and open the Code tab, then press **Refresh**.
 
-**Windows / Linux?** WINDOWS_FAQ_PLACEHOLDER
+**Windows / Linux?** Windows: download `SessionKeeper-Windows.zip` from Releases (built and smoke-tested by GitHub Actions; still new, so keep the snapshots). Linux isn't supported yet.
 
 ## Sponsor
 

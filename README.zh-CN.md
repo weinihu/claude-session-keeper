@@ -42,9 +42,13 @@
 
 > 需要 macOS 14 或更高版本、Claude 桌面版，以及 Python 3。Python 3 随 Apple 命令行工具一起提供；如果没有，在终端运行 `xcode-select --install`。
 
-### Windows 预览版
+### Windows（测试版）
 
-实验性 Windows 界面和共享核心代码位于 `codex/windows-preview-source` 分支，目前还没有安装包。它没有在真实的 Windows Claude Desktop 环境中验证，侧栏数据位置和格式可能不同，请勿把它当作唯一备份。
+1. 在 [Releases](../../releases/latest) 下载 **`SessionKeeper-Windows.zip`**，解压到任意位置，两个 `.exe` 文件要放在一起。
+2. 运行 **SessionKeeper.exe**。如果 Windows 弹出 SmartScreen 提示，点「更多信息 → 仍要运行」（这个程序没有代码签名）。
+3. 如果它找不到 Claude 的数据，打开「设置」，选择包含 `claude-code-sessions` 和 `config.json` 的那个文件夹。
+
+Windows 版刚做出来，还没有在各种 Claude 桌面版安装方式上都测过；有快照和「撤销」兜底，不会丢东西。
 
 ## 怎么用
 
@@ -87,7 +91,7 @@ Claude App 会把当前登录账号的用量（5 小时额度百分比和每周�
 
 **Claude 更新后还能用吗？** 侧边栏的格式没有官方说明，有可能会失效。有快照和「撤销上次操作」兜底，不会丢东西。欢迎提 Issue 或 PR。
 
-**Windows 版能用吗？** Windows 预览源码在 `codex/windows-preview-source` 分支，目前没有安装包，也没有在真实的 Windows Claude Desktop 环境中验证。Linux 暂不支持。
+**Windows 版能用吗？** 能，在 Releases 下载 `SessionKeeper-Windows.zip`。它由 GitHub Actions 在 Windows 上自动打包并做过界面冒烟测试，但还比较新，建议保留快照。Linux 暂不支持。
 
 ## 赞助
 
