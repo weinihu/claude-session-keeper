@@ -24,8 +24,11 @@ Not affiliated with Anthropic. Uses undocumented local files of the Claude deskt
 """
 import argparse
 import copy
+import csv
 import datetime as dt
+import glob
 import json
+import locale
 import os
 import re
 import shutil
@@ -35,17 +38,62 @@ import time
 import uuid
 
 HOME = os.path.expanduser("~")
-APP_DIR = os.path.join(HOME, "Library", "Application Support", "Claude")
+IS_WINDOWS = os.name == "nt"
+
+
+def _windows_user_dir():
+    return os.environ.get("APPDATA") or os.path.join(HOME, "AppData", "Roaming")
+
+
+def _windows_paths_file():
+    return os.path.join(_windows_user_dir(), "SessionKeeper", "paths.json")
+
+
+def _windows_app_dir():
+    configured = os.environ.get("CSV_APP_DIR")
+    if not configured:
+        try:
+            with open(_windows_paths_file(), encoding="utf-8") as f:
+                configured = (json.load(f) or {}).get("app_dir")
+        except (OSError, ValueError, AttributeError):
+            configured = None
+    if configured:
+        return configured
+
+    roaming = _windows_user_dir()
+    local = os.environ.get("LOCALAPPDATA") or os.path.join(HOME, "AppData", "Local")
+    candidates = [
+        os.path.join(roaming, "Claude"),
+        os.path.join(local, "Claude"),
+    ]
+    for package in glob.glob(os.path.join(local, "Packages", "*Claude*")):
+        candidates.extend([
+            os.path.join(package, "LocalCache", "Roaming", "Claude"),
+            os.path.join(package, "LocalCache", "Roaming"),
+            os.path.join(package, "RoamingState", "Claude"),
+        ])
+    for candidate in candidates:
+        if os.path.isdir(os.path.join(candidate, "claude-code-sessions")):
+            return candidate
+    return candidates[0]
+
+
+CLAUDE_HOME = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+APP_DIR = _windows_app_dir() if IS_WINDOWS else os.path.join(HOME, "Library", "Application Support", "Claude")
 SESS_ROOT = os.environ.get("CSV_SESS_ROOT") or os.path.join(APP_DIR, "claude-code-sessions")
 APP_CONFIG = os.environ.get("CSV_APP_CONFIG") or os.path.join(APP_DIR, "config.json")
-PROJECTS = os.environ.get("CSV_PROJECTS") or os.path.join(HOME, ".claude", "projects")
+PROJECTS = os.environ.get("CSV_PROJECTS") or os.path.join(CLAUDE_HOME, "projects")
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 # 保险库放在主目录：外接硬盘上的文件，后台任务没有权限访问
-VAULT = os.environ.get("CSV_VAULT") or os.path.join(HOME, ".claude", "session-vault")
+VAULT = os.environ.get("CSV_VAULT") or os.path.join(CLAUDE_HOME, "session-vault")
 VAULT_SESS = os.path.join(VAULT, "sessions")
 VAULT_SNAP = os.path.join(VAULT, "snapshots")
-TOOL_CONFIG = os.path.join(TOOL_DIR, "config.json")
+TOOL_CONFIG = os.environ.get("CSV_TOOL_CONFIG") or (
+    os.path.join(VAULT, "config.json") if IS_WINDOWS else os.path.join(TOOL_DIR, "config.json"))
+
+AGENT_TASK_NAME = "SessionKeeperAutoBackup"
+WINDOWS_INSTALL_FILE = os.path.join(_windows_user_dir(), "SessionKeeper", "install.json")
 
 # 复制到别的账号时去掉的字段：这些和账号绑定（连接器配置、提示词快照），新账号会自己重新生成。
 ACCOUNT_BOUND_FIELDS = ["remoteMcpServersConfig", "promptAppendSnapshot", "toolSurfaceSnapshot"]
@@ -72,6 +120,10 @@ DEFAULT_CONFIG = {
 # ---------------------------------------------------------------- i18n
 def _is_zh():
     lang = os.environ.get("CSV_LANG") or os.environ.get("LANG") or ""
+    if IS_WINDOWS and not lang:
+        lang = locale.getlocale()[0] or ""
+    if lang.lower().startswith(("zh", "chinese")):
+        return True
     if not lang:
         try:
             out = subprocess.run(["defaults", "read", "-g", "AppleLanguages"],
@@ -125,9 +177,13 @@ def remap_path(path, remaps):
     if not path:
         return path
     for old, new in sorted(remaps.items(), key=lambda kv: -len(kv[0])):
-        old = old.rstrip("/")
-        if path == old or path.startswith(old + "/"):
-            return new.rstrip("/") + path[len(old):]
+        if old in ("", "/", "\\"):
+            return new.rstrip("/\\") + path
+        old = old.rstrip("/\\")
+        normalized_path = os.path.normcase(os.path.normpath(path))
+        normalized_old = os.path.normcase(os.path.normpath(old))
+        if normalized_path == normalized_old or normalized_path.startswith(normalized_old + os.path.sep):
+            return new.rstrip("/\\") + path[len(old):]
     return path
 
 
@@ -144,8 +200,32 @@ def fmt_ms(ms):
 def app_running():
     if os.environ.get("CSV_IGNORE_RUNNING"):
         return False
+    if IS_WINDOWS:
+        try:
+            result = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
+                                    capture_output=True, text=True, timeout=5)
+            return any(row and row[0].lower() == "claude.exe"
+                       for row in csv.reader(result.stdout.splitlines()))
+        except (OSError, subprocess.SubprocessError):
+            return True
     r = subprocess.run(["ps", "-axo", "comm"], capture_output=True, text=True)
     return any(line.strip().endswith("/Claude.app/Contents/MacOS/Claude") for line in r.stdout.splitlines())
+
+
+def open_session_keeper():
+    if IS_WINDOWS:
+        install = load_json(WINDOWS_INSTALL_FILE, {}) or {}
+        command = install.get("gui_command")
+        if isinstance(command, list) and command:
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            subprocess.Popen(command, close_fds=True, creationflags=flags)
+            return
+        gui = install.get("gui_executable") or os.environ.get("CSV_GUI_EXE")
+        if gui and os.path.isfile(gui):
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            subprocess.Popen([gui], close_fds=True, creationflags=flags)
+        return
+    subprocess.run(["open", "-b", GUI_BUNDLE_ID], capture_output=True)
 
 
 # ---------------------------------------------------------------- account folders
@@ -167,6 +247,10 @@ def account_dirs():
 
 def current_account():
     return (load_json(APP_CONFIG, {}) or {}).get("lastKnownAccountUuid")
+
+
+def data_path_ready():
+    return bool(APP_DIR and os.path.isdir(SESS_ROOT) and os.path.isfile(APP_CONFIG) and current_account())
 
 
 def current_dirs():
@@ -648,6 +732,9 @@ def cmd_restore(args, vault=None):
 
 def _restore(args, vault=None):
     cfg = tool_config()
+    if IS_WINDOWS and not data_path_ready():
+        sys.exit(T("Windows Claude 数据目录尚未确认，请先在界面里选择并确认数据文件夹。",
+                   "The Windows Claude data folder is not confirmed. Choose a valid folder in the app first."))
     if not args.dry_run and app_running() and not args.force:
         sys.exit(T("Claude 正在运行。请先退出 Claude 再恢复（App 里的按钮会自动处理），否则 Claude 可能会覆盖恢复结果。确实要继续请加 --force。",
                    "Claude is running. Quit it first (the app's button does this for you), or Claude may overwrite the result. Use --force to override."))
@@ -791,12 +878,14 @@ def status_data():
         "claudeRunning": app_running(),
         "accounts": accounts,
         "orgCount": len({x["org"] for x in accounts}),
+        "dataPathReady": data_path_ready(),
+        "dataRoot": APP_DIR,
         "vaultSessions": len(vault),
         "transcripts": len(transcripts),
         "orphans": len([c for c in transcripts if c not in known]),
         "vaultBytes": size,
         "vaultPath": VAULT,
-        "autoBackup": os.path.exists(AGENT_PLIST),
+        "autoBackup": agent_installed(),
         "lastBackupAt": log_last,
         "canUndo": can_undo,
     }
@@ -853,6 +942,8 @@ def cmd_auto(args):
     """备份；如果发现换了账号、而且新账号缺对话，就打开图形界面问要不要恢复。"""
     if locked():
         return
+    if IS_WINDOWS and not data_path_ready():
+        return
     trim_log()
     cfg = tool_config()
     vault = cmd_backup(args, quiet=True)
@@ -887,7 +978,7 @@ def cmd_auto(args):
             f"[{stamp}] Account switch: {str(state.get('lastAccount'))[:8]}… -> {str(acc)[:8]}…, {missing} chat(s) missing"))
     if missing and not getattr(args, "no_open", False):
         write_json(PENDING_FILE, {"account": acc, "missing": missing, "at": int(time.time() * 1000)})
-        subprocess.run(["open", "-b", GUI_BUNDLE_ID], capture_output=True)
+        open_session_keeper()
 
 
 # ---------------------------------------------------------------- usage (quota status)
@@ -1070,11 +1161,52 @@ def cmd_usage(args):
 # ---------------------------------------------------------------- launchd
 AGENT_LABEL = "local.claude-session-vault.backup"
 AGENT_PLIST = os.path.join(HOME, "Library", "LaunchAgents", AGENT_LABEL + ".plist")
-LOG_PATH = os.path.join(HOME, "Library", "Logs", "claude-session-vault.log")
+if IS_WINDOWS:
+    LOG_PATH = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.join(HOME, "AppData", "Local"),
+                            "SessionKeeper", "claude-session-vault.log")
+else:
+    LOG_PATH = os.path.join(HOME, "Library", "Logs", "claude-session-vault.log")
+
+
+def agent_installed():
+    if IS_WINDOWS:
+        try:
+            result = subprocess.run(["schtasks", "/Query", "/TN", AGENT_TASK_NAME],
+                                    capture_output=True, text=True, timeout=10)
+            return result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return os.path.exists(AGENT_PLIST)
+
+
+def _core_task_command(args):
+    configured = os.environ.get("CSV_CORE_EXE")
+    if configured:
+        return [configured] + args
+    if getattr(sys, "frozen", False):
+        return [sys.executable] + args
+    return [sys.executable, os.path.abspath(__file__)] + args
 
 
 def cmd_install_agent(args):
     seconds = max(60, args.seconds)
+    if IS_WINDOWS:
+        if not data_path_ready():
+            sys.exit(T("找不到 Claude 的会话数据目录。请先在 Windows 版界面里选择 Claude 数据文件夹。",
+                       "Claude session data was not found. Choose the Claude data folder in the Windows app first."))
+        minutes = max(1, (seconds + 59) // 60)
+        task = subprocess.list2cmdline(_core_task_command(["auto"]))
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        subprocess.run([
+            "schtasks", "/Create", "/SC", "MINUTE", "/MO", str(minutes),
+            "/TN", AGENT_TASK_NAME, "/TR", task, "/F", "/IT",
+        ], check=True, capture_output=True, text=True)
+        if not os.path.exists(STATE_FILE):
+            write_json(STATE_FILE, {"lastAccount": current_account(),
+                                    "folders": sorted(f"{a}/{o}" for a, o, _ in account_dirs())})
+        print(T(f"已开启 Windows 登录期间的后台备份：每 {minutes} 分钟一次",
+                f"Windows background backup enabled (every {minutes} minute(s) while signed in)"))
+        return
     script = os.path.join(VAULT, "claude_sessions.py")
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1108,6 +1240,11 @@ def cmd_install_agent(args):
 
 
 def cmd_uninstall_agent(args):
+    if IS_WINDOWS:
+        subprocess.run(["schtasks", "/Delete", "/TN", AGENT_TASK_NAME, "/F"],
+                       capture_output=True, text=True)
+        print(T("已关闭后台自动备份", "Auto backup turned off"))
+        return
     if os.path.exists(AGENT_PLIST):
         subprocess.run(["launchctl", "unload", AGENT_PLIST], capture_output=True)
         os.remove(AGENT_PLIST)

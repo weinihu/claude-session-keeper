@@ -42,6 +42,10 @@
 
 > 需要 macOS 14 或更高版本、Claude 桌面版，以及 Python 3。Python 3 随 Apple 命令行工具一起提供；如果没有，在终端运行 `xcode-select --install`。
 
+### Windows 预览版
+
+实验性 Windows 界面和共享核心代码位于 `codex/windows-preview-source` 分支，目前还没有安装包。它没有在真实的 Windows Claude Desktop 环境中验证，侧栏数据位置和格式可能不同，请勿把它当作唯一备份。
+
 ## 怎么用
 
 | 什么时候 | 做什么 |
@@ -82,6 +86,12 @@ Claude App 会把当前登录账号的用量（5 小时额度百分比和每周�
 **为什么某个账号显示的是旧数据？** 用量只在账号登录时才会被记录。登录那个账号、打开一次 Code 标签页，再点「刷新」就行。
 
 **Claude 更新后还能用吗？** 侧边栏的格式没有官方说明，有可能会失效。有快照和「撤销上次操作」兜底，不会丢东西。欢迎提 Issue 或 PR。
+
+**Windows 版能用吗？** Windows 预览源码在 `codex/windows-preview-source` 分支，目前没有安装包，也没有在真实的 Windows Claude Desktop 环境中验证。Linux 暂不支持。
+
+## 赞助
+
+> **广告** — [**tutu8.shop**](https://tutu8.shop)：作者自营的充值网站。在这里下单，就是在支持这个项目继续更新。
 
 ## 声明
 

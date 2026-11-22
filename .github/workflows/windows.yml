@@ -1,0 +1,70 @@
+name: Windows build
+
+on:
+  push:
+    branches: ["**"]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install --upgrade pip pyinstaller pillow
+
+      - name: Core tests
+        run: python -m unittest discover -s tests -v
+
+      - name: UI smoke test + screenshots (zh, en)
+        shell: pwsh
+        run: |
+          foreach ($lang in @("zh", "en")) {
+            $dir = Join-Path $env:RUNNER_TEMP "demo-$lang"
+            python tests/make_demo.py $dir $lang | ForEach-Object {
+              $k, $v = $_ -split "=", 2
+              [Environment]::SetEnvironmentVariable($k, $v, "Process")
+            }
+            python tests/windows_gui_smoke.py screenshots
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-screenshots
+          path: screenshots/
+
+      - name: Build icon
+        run: python -c "from PIL import Image; Image.open('docs/icon.png').save('app/icon.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+
+      - name: Build exe
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --onefile --console --name SessionKeeperCore claude_sessions.py
+          pyinstaller --noconfirm --onefile --windowed --name SessionKeeper --icon app/icon.ico `
+            --add-data "config.default.json;." --add-data "docs/icon.png;." `
+            --paths . app/windows_app.py
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item dist/SessionKeeper.exe, dist/SessionKeeperCore.exe, LICENSE package/
+          Compress-Archive -Path package/* -DestinationPath SessionKeeper-Windows.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SessionKeeper-Windows
+          path: SessionKeeper-Windows.zip
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ${{ github.event.release.tag_name }} SessionKeeper-Windows.zip --clobber --repo ${{ github.repository }}

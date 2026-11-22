@@ -43,6 +43,10 @@ They aren't actually gone. The transcripts are still on disk. Claude just keeps 
 
 > Requires macOS 14+, the Claude desktop app, and Python 3. Python 3 ships with Apple's Command Line Tools; if it's missing, run `xcode-select --install`.
 
+### Windows preview
+
+An experimental Windows UI and shared-core adaptation are available on the `codex/windows-preview-source` branch. No Windows installer is published yet. This preview has not been tested with a live Claude Desktop installation; the Windows sidebar data location and format may differ. Do not rely on it as your only backup.
+
 ## How to use
 
 | When | What to do |
@@ -120,7 +124,11 @@ cd claude-session-keeper
 
 **Why does an account show old numbers?** Usage is only recorded while that account is signed in. Sign in and open the Code tab, then press **Refresh**.
 
-**Windows / Linux?** Not yet. PRs welcome.
+**Windows / Linux?** WINDOWS_FAQ_PLACEHOLDER
+
+## Sponsor
+
+> **Ad** — [**tutu8.shop**](https://tutu8.shop): the author's top-up shop. Shopping there helps keep this project going.
 
 ## Disclaimer
 

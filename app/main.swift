@@ -391,6 +391,30 @@ struct Bar: View {
     }
 }
 
+/// Sponsor slot — clearly labelled as an ad, opens the site in the browser.
+struct AdCard: View {
+    var body: some View {
+        Link(destination: URL(string: "https://tutu8.shop")!) {
+            HStack(spacing: 12) {
+                Text(L("广告", "Ad")).font(.caption2.bold()).foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(brand))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("tutu8.shop").font(.callout.weight(.semibold)).foregroundStyle(.primary)
+                    Text(L("作者自营的充值网站", "The author's top-up shop")).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(L("去看看 ›", "Visit ›")).font(.callout.weight(.medium)).foregroundStyle(brand)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 11)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(brand.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(brand.opacity(0.22)))
+        }
+        .buttonStyle(.plain)
+        .help("https://tutu8.shop")
+    }
+}
+
 struct PageHeader<Trailing: View>: View {
     let title: String
     let subtitle: String
@@ -635,6 +659,8 @@ struct ContentView: View {
                 statTile(L("备份占用", "Vault size"),
                          ByteCountFormatter.string(fromByteCount: Int64(m.status?.vaultBytes ?? 0), countStyle: .file), "internaldrive")
             }
+
+            AdCard()
 
             if !m.log.isEmpty {
                 Card {
@@ -901,6 +927,7 @@ struct ContentView: View {
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
+            AdCard()
         }
     }
 }
