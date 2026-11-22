@@ -1,6 +1,11 @@
-// Renders AppIcon.iconset: two chat bubbles on a warm squircle, with a "switch" badge.
+// Renders AppIcon.iconset: two overlapping account avatars on a deep warm squircle,
+// with a small "switch" badge — several accounts, one tap to move between them.
 // Usage: swift make_icon.swift <out-dir> [preview.png]
 import AppKit
+
+let orange = NSColor(red: 0.95, green: 0.52, blue: 0.29, alpha: 1)
+let orangeDeep = NSColor(red: 0.84, green: 0.38, blue: 0.22, alpha: 1)
+let cream = NSColor(red: 0.98, green: 0.93, blue: 0.86, alpha: 1)
 
 func drawIcon(size s: CGFloat) -> NSBitmapImageRep {
     let px = Int(s)
@@ -12,80 +17,66 @@ func drawIcon(size s: CGFloat) -> NSBitmapImageRep {
     NSGraphicsContext.current = ctx
     ctx.imageInterpolation = .high
 
-    // macOS icon grid: 824/1024 body, centred, with a soft drop shadow
+    // macOS icon grid: 824/1024 body with a soft drop shadow
     let body = s * 824 / 1024
     let o = (s - body) / 2
     let rect = NSRect(x: o, y: o + s * 0.008, width: body, height: body)
-    let radius = body * 0.225
-    let squircle = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
-
+    let squircle = NSBezierPath(roundedRect: rect, xRadius: body * 0.225, yRadius: body * 0.225)
     NSGraphicsContext.saveGraphicsState()
     let shadow = NSShadow()
-    shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.30)
     shadow.shadowBlurRadius = s * 0.022
     shadow.shadowOffset = NSSize(width: 0, height: -s * 0.010)
     shadow.set()
-    NSColor(red: 0.85, green: 0.42, blue: 0.24, alpha: 1).setFill()
+    NSColor(red: 0.16, green: 0.14, blue: 0.14, alpha: 1).setFill()
     squircle.fill()
     NSGraphicsContext.restoreGraphicsState()
 
-    // warm gradient + top sheen
-    NSGradient(colors: [NSColor(red: 0.99, green: 0.66, blue: 0.38, alpha: 1),
-                        NSColor(red: 0.91, green: 0.45, blue: 0.27, alpha: 1),
-                        NSColor(red: 0.78, green: 0.33, blue: 0.22, alpha: 1)])!
-        .draw(in: squircle, angle: -90)
+    // deep warm background + gentle top light
+    NSGradient(colors: [NSColor(red: 0.27, green: 0.22, blue: 0.21, alpha: 1),
+                        NSColor(red: 0.17, green: 0.15, blue: 0.15, alpha: 1)])!.draw(in: squircle, angle: -90)
     NSGraphicsContext.saveGraphicsState()
     squircle.addClip()
-    NSGradient(starting: NSColor.white.withAlphaComponent(0.22), ending: NSColor.white.withAlphaComponent(0))!
-        .draw(in: NSRect(x: rect.minX, y: rect.midY, width: rect.width, height: rect.height / 2), angle: -90)
+    NSGradient(starting: orange.withAlphaComponent(0.20), ending: orange.withAlphaComponent(0))!
+        .draw(fromCenter: NSPoint(x: rect.midX, y: rect.maxY), radius: 0,
+              toCenter: NSPoint(x: rect.midX, y: rect.maxY), radius: body * 0.75, options: [])
     NSGraphicsContext.restoreGraphicsState()
 
-    func bubble(_ r: NSRect, tailLeft: Bool, fill: NSColor) {
-        let p = NSBezierPath(roundedRect: r, xRadius: r.height * 0.42, yRadius: r.height * 0.42)
-        let tail = NSBezierPath()
-        let ty = r.minY + r.height * 0.18
-        if tailLeft {
-            tail.move(to: NSPoint(x: r.minX + r.width * 0.16, y: ty))
-            tail.line(to: NSPoint(x: r.minX + r.width * 0.02, y: r.minY - r.height * 0.20))
-            tail.line(to: NSPoint(x: r.minX + r.width * 0.36, y: r.minY + r.height * 0.02))
-        } else {
-            tail.move(to: NSPoint(x: r.maxX - r.width * 0.16, y: ty))
-            tail.line(to: NSPoint(x: r.maxX - r.width * 0.02, y: r.minY - r.height * 0.20))
-            tail.line(to: NSPoint(x: r.maxX - r.width * 0.36, y: r.minY + r.height * 0.02))
-        }
-        tail.close()
-        fill.setFill(); p.fill(); tail.fill()
-    }
-
-    // back bubble (translucent), front bubble (white) with three "message" lines
     let u = body / 100
-    bubble(NSRect(x: rect.minX + 30 * u, y: rect.minY + 44 * u, width: 52 * u, height: 34 * u),
-           tailLeft: false, fill: NSColor.white.withAlphaComponent(0.45))
-    let front = NSRect(x: rect.minX + 16 * u, y: rect.minY + 26 * u, width: 56 * u, height: 36 * u)
-    NSGraphicsContext.saveGraphicsState()
-    let bs = NSShadow(); bs.shadowColor = NSColor.black.withAlphaComponent(0.18)
-    bs.shadowBlurRadius = 3 * u; bs.shadowOffset = NSSize(width: 0, height: -1.2 * u); bs.set()
-    bubble(front, tailLeft: true, fill: .white)
-    NSGraphicsContext.restoreGraphicsState()
-    let lineColor = NSColor(red: 0.88, green: 0.47, blue: 0.29, alpha: 0.9)
-    for (i, w) in [36.0, 28.0].enumerated() {
-        let lh = 4.6 * u
-        let y = front.maxY - 12 * u - CGFloat(i) * 9.5 * u
-        let line = NSBezierPath(roundedRect: NSRect(x: front.minX + 10 * u, y: y, width: CGFloat(w) * u, height: lh),
-                                xRadius: lh / 2, yRadius: lh / 2)
-        lineColor.setFill(); line.fill()
+    func avatar(center c: NSPoint, r: CGFloat, fill: NSColor, glyph: NSColor, ring: NSColor?) {
+        let circle = NSBezierPath(ovalIn: NSRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
+        if let ring = ring {
+            let outer = NSBezierPath(ovalIn: NSRect(x: c.x - r - 2.2 * u, y: c.y - r - 2.2 * u, width: 2 * r + 4.4 * u, height: 2 * r + 4.4 * u))
+            ring.setFill(); outer.fill()
+        }
+        fill.setFill(); circle.fill()
+        NSGraphicsContext.saveGraphicsState()
+        circle.addClip()
+        glyph.setFill()
+        // head
+        let hr = r * 0.36
+        NSBezierPath(ovalIn: NSRect(x: c.x - hr, y: c.y + r * 0.02, width: 2 * hr, height: 2 * hr)).fill()
+        // shoulders
+        let sw = r * 1.25, sh = r * 0.95
+        NSBezierPath(ovalIn: NSRect(x: c.x - sw / 2, y: c.y - r * 0.98, width: sw, height: sh)).fill()
+        NSGraphicsContext.restoreGraphicsState()
     }
 
-    // switch badge: white disc with circular arrows
-    let d = 34 * u
-    let disc = NSRect(x: rect.maxX - d - 9 * u, y: rect.minY + 9 * u, width: d, height: d)
-    NSGraphicsContext.saveGraphicsState()
-    let ds = NSShadow(); ds.shadowColor = NSColor.black.withAlphaComponent(0.22)
-    ds.shadowBlurRadius = 3 * u; ds.shadowOffset = NSSize(width: 0, height: -1.2 * u); ds.set()
-    NSColor.white.setFill(); NSBezierPath(ovalIn: disc).fill()
-    NSGraphicsContext.restoreGraphicsState()
-    let cfg = NSImage.SymbolConfiguration(pointSize: d * 0.50, weight: .heavy)
-        .applying(.init(paletteColors: [NSColor(red: 0.86, green: 0.40, blue: 0.24, alpha: 1)]))
+    // back avatar (cream), front avatar (orange) with a ring that cuts it out of the back one
+    avatar(center: NSPoint(x: rect.minX + 38 * u, y: rect.minY + 60 * u), r: 19 * u,
+           fill: cream, glyph: NSColor(red: 0.80, green: 0.68, blue: 0.58, alpha: 1), ring: nil)
+    avatar(center: NSPoint(x: rect.minX + 60 * u, y: rect.minY + 42 * u), r: 21 * u,
+           fill: orange, glyph: NSColor(red: 1, green: 0.93, blue: 0.86, alpha: 1),
+           ring: NSColor(red: 0.20, green: 0.17, blue: 0.17, alpha: 1))
+
+    // switch badge
+    let d = 22 * u
+    let disc = NSRect(x: rect.minX + 70 * u, y: rect.minY + 62 * u, width: d, height: d)
+    NSColor(red: 0.20, green: 0.17, blue: 0.17, alpha: 1).setFill()
+    NSBezierPath(ovalIn: disc.insetBy(dx: -2 * u, dy: -2 * u)).fill()
+    NSGradient(starting: orange, ending: orangeDeep)!.draw(in: NSBezierPath(ovalIn: disc), angle: -90)
+    let cfg = NSImage.SymbolConfiguration(pointSize: d * 0.48, weight: .heavy)
+        .applying(.init(paletteColors: [.white]))
     if let sym = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)?
         .withSymbolConfiguration(cfg) {
         let sz = sym.size

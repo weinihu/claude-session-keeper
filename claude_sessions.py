@@ -858,6 +858,7 @@ def cmd_auto(args):
     vault = cmd_backup(args, quiet=True)
     try:
         merge_usage()
+        learn_identities()
     except Exception:
         pass
     with open(os.path.join(VAULT, "last-run"), "w"):
@@ -917,20 +918,76 @@ def account_names():
     return load_json(ACCOUNTS_FILE, {}) or {}
 
 
+CLAUDE_JSON = os.environ.get("CSV_CLAUDE_JSON") or os.path.join(HOME, ".claude.json")
+CLAUDE_JSON_BACKUPS = os.environ.get("CSV_CLAUDE_JSON_BACKUPS") or os.path.join(HOME, ".claude", "backups")
+
+
+def _identity_from(path):
+    """Account fields (never tokens) that Claude Code keeps for the signed-in account."""
+    d = load_json(path)
+    oa = d.get("oauthAccount") if isinstance(d, dict) else None
+    if not isinstance(oa, dict) or not oa.get("organizationUuid"):
+        return None
+    try:
+        seen = int(os.path.getmtime(path) * 1000)
+    except OSError:
+        seen = 0
+    return {"org": oa["organizationUuid"], "email": oa.get("emailAddress"),
+            "displayName": oa.get("displayName"), "account": oa.get("accountUuid"), "seen": seen}
+
+
+def current_identity():
+    return _identity_from(CLAUDE_JSON)
+
+
+def learn_identities():
+    """Remember which email belongs to which organization (account). Stored only in the vault."""
+    found = []
+    cur = current_identity()
+    if cur:
+        found.append(cur)
+    if os.path.isdir(CLAUDE_JSON_BACKUPS):
+        for n in os.listdir(CLAUDE_JSON_BACKUPS):
+            if n.startswith(".claude.json"):
+                i = _identity_from(os.path.join(CLAUDE_JSON_BACKUPS, n))
+                if i:
+                    found.append(i)
+    if not found:
+        return cur
+    names = account_names()
+    changed = False
+    for i in sorted(found, key=lambda x: x["seen"]):
+        rec = names.setdefault(i["org"], {})
+        for key in ("email", "displayName", "account"):
+            if i.get(key) and rec.get(key) != i[key] and i["seen"] >= rec.get("seen", 0):
+                rec[key] = i[key]
+                changed = True
+        if i["seen"] > rec.get("seen", 0):
+            rec["seen"] = i["seen"]
+            changed = True
+    if changed:
+        write_json(ACCOUNTS_FILE, names)
+    return cur
+
+
 def usage_data(now_ms=None):
     """Per-account quota status, with estimates for when limits reset."""
     now = now_ms or int(time.time() * 1000)
     samples = merge_usage()
+    ident = learn_identities()
     names = account_names()
     by_org = {}
     for x in samples:
         u = x.get("u") or {}
         if "fh" in u or "sd" in u:
             by_org.setdefault(x["org"], []).append(x)
-    current = samples[-1]["org"] if samples else None
+    current = (ident or {}).get("org") or (samples[-1]["org"] if samples else None)
+    for org in names:                          # accounts we know by email but without usage yet
+        if names[org].get("email") and org not in by_org:
+            by_org[org] = []
     out = []
     for i, (org, xs) in enumerate(sorted(by_org.items(), key=lambda kv: kv[0])):
-        last = xs[-1]
+        last = xs[-1] if xs else {"u": {}, "t": 0}
         fh, sd, t = last["u"].get("fh"), last["u"].get("sd"), last["t"]
         # five-hour window: a sample older than 5 h means that window is over for sure
         fh_reset_at, fh_now, fh_est = None, fh, False
@@ -961,16 +1018,19 @@ def usage_data(now_ms=None):
             sd_reset_at = start + WEEK
             if now >= sd_reset_at:
                 sd_now, sd_est, sd_reset_at = 0, True, None
+        rec = names.get(org) or {}
         out.append({
             "org": org,
-            "name": (names.get(org) or {}).get("name") or T(f"账号 {i + 1}", f"Account {i + 1}"),
-            "named": bool((names.get(org) or {}).get("name")),
+            "email": rec.get("email"),
+            "name": rec.get("name") or (rec.get("email") or "").split("@")[0] or T(f"未识别账号 {org[:4]}", f"Unknown account {org[:4]}"),
+            "named": bool(rec.get("name")),
             "current": org == current,
             "updatedAt": t,
             "fiveHour": fh_now, "fiveHourEstimated": fh_est, "fiveHourResetAt": fh_reset_at,
             "weekly": sd_now, "weeklyEstimated": sd_est, "weeklyResetAt": sd_reset_at,
             "samples": len(xs),
         })
+    out.sort(key=lambda a: (not a["current"], a["name"].lower()))
     return {"now": now, "current": current, "accounts": out, "source": USAGE_SRC,
             "sourceFound": os.path.exists(USAGE_SRC)}
 
@@ -981,7 +1041,7 @@ def cmd_usage(args):
         names = account_names()
         names.setdefault(org, {})["name"] = name.strip()
         if not name.strip():
-            names.pop(org, None)
+            names[org].pop("name", None)
         write_json(ACCOUNTS_FILE, names)
     data = usage_data()
     if args.json:
@@ -997,7 +1057,7 @@ def cmd_usage(args):
 
     for a in data["accounts"]:
         mark = T("  <- 当前", "  <- current") if a["current"] else ""
-        print(f"{a['name']} [{a['org'][:8]}]{mark}")
+        print(f"{a['name']} <{a.get('email') or '?'}> [{a['org'][:8]}]{mark}")
         print(T("  5 小时：", "  5-hour: ") + pct(a["fiveHour"], a["fiveHourEstimated"])
               + (T(f"，最晚约 {fmt_ms(a['fiveHourResetAt'])} 恢复", f", resets by ~{fmt_ms(a['fiveHourResetAt'])}")
                  if a["fiveHourResetAt"] else ""))

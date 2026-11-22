@@ -41,7 +41,7 @@ cp "$ROOT/claude_sessions.py" "$R/"
 cp "$ROOT/config.default.json" "$R/"
 mkdir -p "$R/en.lproj" "$R/zh-Hans.lproj"
 printf '"CFBundleDisplayName" = "%s";\n"CFBundleName" = "%s";\n' "$NAME" "$NAME" > "$R/en.lproj/InfoPlist.strings"
-printf '"CFBundleDisplayName" = "Claude 多账号管家";\n"CFBundleName" = "Claude 多账号管家";\n' > "$R/zh-Hans.lproj/InfoPlist.strings"
+printf '"CFBundleDisplayName" = "Claude 换号助手";\n"CFBundleName" = "Claude 换号助手";\n' > "$R/zh-Hans.lproj/InfoPlist.strings"
 codesign --force --deep --sign - "$APP"
 
 mkdir -p "$ROOT/dist"
