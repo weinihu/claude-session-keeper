@@ -31,6 +31,15 @@ struct Status: Decodable {
 }
 
 struct Usage: Decodable {
+    /// Next reset as described by the core: weekday + date + time, ISO week, countdown.
+    struct Reset: Decodable {
+        let at: Double
+        let exact: Bool
+        let when: String
+        let week: String
+        let inText: String
+        enum CodingKeys: String, CodingKey { case at, exact, when, week, inText = "in" }
+    }
     struct Account: Decodable, Identifiable {
         let org: String
         let name: String
@@ -44,6 +53,8 @@ struct Usage: Decodable {
         let weekly: Int?
         let weeklyEstimated: Bool
         let weeklyResetAt: Double?
+        let fiveHourReset: Reset?
+        let weeklyReset: Reset?
         var id: String { org }
         /// Main line: the name you gave it, otherwise the full email.
         var title: String { named ? name : (email ?? name) }
@@ -602,6 +613,13 @@ struct ContentView: View {
                             miniGauge(L("每周", "Weekly"), u.weekly, u.weeklyEstimated)
                         }
                     }
+                    if let u = currentUsage {
+                        HStack(spacing: 18) {
+                            resetLine(L("5 小时", "5-hour"), u.fiveHourReset,
+                                      u.fiveHour == nil ? L("暂无数据", "no data") : L("现在可用", "available now"))
+                            resetLine(L("每周", "Weekly"), u.weeklyReset, L("重置时间未知", "reset unknown"))
+                        }
+                    }
                     Divider()
                     HStack(spacing: 12) {
                         let n = m.status?.accounts.first { $0.current }?.sessions ?? 0
@@ -640,7 +658,9 @@ struct ContentView: View {
                                     Text(a.title).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
                                     if a.current { Tag(text: L("当前", "Current")) }
                                 }
-                                Text(a.named ? (a.email ?? a.subtitle) : (a.email == nil ? a.subtitle : L("未命名", "unnamed")))
+                                Text(a.named ? (a.email ?? a.subtitle)
+                                     : (a.email == nil ? a.subtitle
+                                        : (a.weeklyReset.map { L("每周 \($0.when) 重置", "weekly resets \($0.when)") } ?? L("每周重置时间未知", "weekly reset unknown"))))
                                     .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                             }
                             Spacer()
@@ -685,6 +705,15 @@ struct ContentView: View {
         }
     }
 
+    func resetLine(_ label: String, _ r: Usage.Reset?, _ idle: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock.arrow.circlepath").font(.caption).foregroundStyle(brand)
+            Text(label).font(.caption.weight(.semibold))
+            Text(r.map { "\($0.when) · \($0.week) · \($0.inText)" + ($0.exact ? "" : L("（估计）", " (est.)")) } ?? idle)
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
     func compactBar(_ label: String, _ v: Int?, _ est: Bool) -> some View {
         HStack(spacing: 6) {
             Text(label).font(.caption2).foregroundStyle(.secondary).frame(width: 18, alignment: .trailing)
@@ -713,30 +742,17 @@ struct ContentView: View {
     var usagePage: some View {
         VStack(alignment: .leading, spacing: 18) {
             PageHeader(title: L("额度", "Usage"),
-                       subtitle: L("每个账号的 5 小时额度和每周额度", "5-hour and weekly limits for every account")) {
+                       subtitle: L("每个账号的 5 小时额度和每周额度，以及下一次重置时间", "5-hour and weekly limits for every account, and when each resets")) {
                 Button { Task { await m.loadUsage() } } label: {
                     Label(L("刷新", "Refresh"), systemImage: "arrow.clockwise")
                 }
             }
             if let u = m.usage, !u.accounts.isEmpty {
-                Card(padding: 0) {
-                    VStack(spacing: 0) {
-                        HStack(spacing: 12) {
-                            Text(L("账号", "Account")).frame(maxWidth: .infinity, alignment: .leading)
-                            Text(L("5 小时", "5-hour")).frame(width: 140, alignment: .leading)
-                            Text(L("每周", "Weekly")).frame(width: 140, alignment: .leading)
-                        }
-                        .font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                        .padding(.horizontal, 16).padding(.vertical, 9)
-                        .background(Color.primary.opacity(0.03))
-                        ForEach(u.accounts) { a in
-                            Divider()
-                            usageRow(a)
-                        }
-                    }
+                VStack(spacing: 12) {
+                    ForEach(u.accounts) { a in usageCard(a) }
                 }
-                Label(L("数据来自 Claude 在本机记录的用量和账号信息，不联网、不读取 token。只有当前登录的账号会更新；其他账号显示最后一次登录时的情况。没有邮箱的账号，下次登录时会自动识别。恢复时间是估计值。",
-                        "Read from the usage and account info Claude keeps on this Mac — no network, no tokens. Only the signed-in account updates. Accounts without an email are identified the next time you sign in. Reset times are estimates."),
+                Label(L("数据来自 Claude 在本机的记录，不联网、不读取 token：用量来自 Claude App；邮箱和精确的重置时间来自 Claude Code 的对话记录。标「精确」的是 Claude 自己给出的时间，标「估计」的是推算的。只有当前登录的账号会更新用量。",
+                        "Everything comes from Claude's own records on this Mac — no network, no tokens. Usage comes from the Claude app; emails and exact reset times come from Claude Code's transcripts. \"Exact\" times were reported by Claude; \"est.\" ones are inferred. Only the signed-in account updates."),
                       systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -751,49 +767,78 @@ struct ContentView: View {
         }
     }
 
-    func usageRow(_ a: Usage.Account) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            HStack(spacing: 10) {
-                Avatar(name: a.avatarText, size: 34)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 5) {
-                        Text(a.title).font(a.named ? .body.weight(.semibold) : .callout.weight(.semibold))
-                            .lineLimit(1).truncationMode(.middle)
-                        Button { m.startRename(a) } label: {
-                            Image(systemName: "pencil").font(.caption).foregroundStyle(.tertiary)
+    func usageCard(_ a: Usage.Account) -> some View {
+        Card(padding: 16) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Avatar(name: a.avatarText, size: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(a.title).font(.system(size: 14, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                                .textSelection(.enabled)
+                            Button { m.startRename(a) } label: {
+                                Image(systemName: "pencil").font(.caption).foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.plain).help(L("起个名字", "Rename"))
+                            if a.current { Tag(text: L("当前登录", "Signed in")) }
                         }
-                        .buttonStyle(.plain).help(L("改名字", "Rename"))
-                        if a.current { Tag(text: L("当前", "Current")) }
+                        Text(a.subtitle).font(.caption).foregroundStyle(a.named && a.email != nil ? .secondary : .tertiary)
+                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                     }
-                    Text(a.subtitle)
-                        .font(.caption).foregroundStyle(a.named && a.email != nil ? .secondary : .tertiary)
-                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                    Text(a.updatedAt > 0 ? L("更新于 ", "as of ") + shortTime(a.updatedAt) : L("暂无用量记录", "no usage yet"))
+                    Spacer()
+                    Text(a.updatedAt > 0 ? L("用量更新于 ", "usage as of ") + shortTime(a.updatedAt) : L("暂无用量记录", "no usage yet"))
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
+                HStack(alignment: .top, spacing: 14) {
+                    limitBlock(L("5 小时额度", "5-hour limit"), a.fiveHour, a.fiveHourEstimated, a.fiveHourReset,
+                               resetWord: L("下次恢复", "Resets"),
+                               idle: a.fiveHour == nil ? L("暂无数据", "no data")
+                                   : L("现在可用 · 开始使用后 5 小时内恢复", "Available · resets 5 h after you start"))
+                    limitBlock(L("每周额度", "Weekly limit"), a.weekly, a.weeklyEstimated, a.weeklyReset,
+                               resetWord: L("下次重置", "Resets"),
+                               idle: a.weekly == nil ? L("暂无数据", "no data")
+                                   : L("重置时间未知 · 碰到一次每周限额后就能算准", "Reset time unknown until the weekly limit is hit once"))
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            limitCell(a.fiveHour, a.fiveHourEstimated,
-                      a.fiveHourResetAt.map { L("最晚 \(shortTime($0)) 恢复", "resets by \(shortTime($0))") }
-                          ?? (a.fiveHourEstimated ? L("应已恢复", "should be reset") : (a.fiveHour == nil ? "" : L("可用", "available"))))
-            limitCell(a.weekly, a.weeklyEstimated,
-                      a.weeklyResetAt.map { L("约 \(shortTime($0)) 重置", "resets ~\(shortTime($0))") }
-                          ?? (a.weeklyEstimated ? L("应已重置", "should be reset") : ""))
         }
-        .padding(.horizontal, 16).padding(.vertical, 12)
-        .background(a.current ? brand.opacity(0.04) : Color.clear)
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(a.current ? brand.opacity(0.45) : .clear, lineWidth: 1.5))
     }
 
-    func limitCell(_ v: Int?, _ est: Bool, _ note: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Bar(value: v, estimated: est, width: 80)
-                Text(v.map { "\($0)%" } ?? "—").font(.callout.monospacedDigit().weight(.medium))
-                    .foregroundStyle(est ? .secondary : .primary)
+    func limitBlock(_ title: String, _ v: Int?, _ est: Bool, _ r: Usage.Reset?, resetWord: String, idle: String) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(.callout.weight(.medium))
+                Spacer()
+                Text(v.map { "\($0)%" } ?? "—")
+                    .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(v == nil ? .secondary : (est ? .secondary : usageColor(v)))
             }
-            Text(note.isEmpty ? " " : note).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    Capsule().fill(usageColor(v).opacity(est ? 0.45 : 0.9))
+                        .frame(width: v == nil ? 0 : max(6, g.size.width * min(max(Double(v ?? 0) / 100, 0), 1)))
+                }
+            }
+            .frame(height: 7)
+            if let r = r {
+                HStack(spacing: 6) {
+                    Text("\(resetWord) \(r.when)").font(.caption.weight(.medium))
+                    Text(r.exact ? L("精确", "exact") : L("估计", "est."))
+                        .font(.system(size: 9, weight: .semibold))
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(r.exact ? Color.green.opacity(0.15) : Color.secondary.opacity(0.15)))
+                        .foregroundStyle(r.exact ? Color.green : Color.secondary)
+                }
+                Text("\(r.week) · \(r.inText)").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text(idle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .frame(width: 140, alignment: .leading)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.035)))
     }
 
     // MARK: chats

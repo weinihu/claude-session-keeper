@@ -948,8 +948,7 @@ def cmd_auto(args):
     cfg = tool_config()
     vault = cmd_backup(args, quiet=True)
     try:
-        merge_usage()
-        learn_identities()
+        usage_data()
     except Exception:
         pass
     with open(os.path.join(VAULT, "last-run"), "w"):
@@ -1011,10 +1010,12 @@ def account_names():
 
 CLAUDE_JSON = os.environ.get("CSV_CLAUDE_JSON") or os.path.join(HOME, ".claude.json")
 CLAUDE_JSON_BACKUPS = os.environ.get("CSV_CLAUDE_JSON_BACKUPS") or os.path.join(HOME, ".claude", "backups")
+EVENTS_FILE = os.path.join(VAULT, "transcript-events.json")
+_EMAIL_RX = re.compile(r"email address is ([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})")
 
 
 def _identity_from(path):
-    """Account fields (never tokens) that Claude Code keeps for the signed-in account."""
+    """Account fields (never tokens) that Claude Code keeps for its signed-in account."""
     d = load_json(path)
     oa = d.get("oauthAccount") if isinstance(d, dict) else None
     if not isinstance(oa, dict) or not oa.get("organizationUuid"):
@@ -1024,17 +1025,103 @@ def _identity_from(path):
     except OSError:
         seen = 0
     return {"org": oa["organizationUuid"], "email": oa.get("emailAddress"),
-            "displayName": oa.get("displayName"), "account": oa.get("accountUuid"), "seen": seen}
+            "account": oa.get("accountUuid"), "seen": seen}
 
 
-def current_identity():
-    return _identity_from(CLAUDE_JSON)
+def _iso_ms(ts):
+    try:
+        return int(dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
 
 
-def learn_identities():
-    """Remember which email belongs to which organization (account). Stored only in the vault."""
+def scan_transcripts():
+    """Incrementally collect two kinds of events from Claude Code transcripts:
+       - the desktop app's `userEmail` context (who was signed in at that moment), and
+       - `rate_limit_info` (exact reset time when a 5-hour / weekly limit was hit).
+    Only newly appended bytes are read on later runs."""
+    db = load_json(EVENTS_FILE, {}) or {}
+    files = db.get("files", {})
+    emails = {tuple(x) for x in db.get("emails", [])}
+    limits = {tuple(x) for x in db.get("limits", [])}
+    changed = False
+    if os.path.isdir(PROJECTS):
+        for proj in os.listdir(PROJECTS):
+            pdir = os.path.join(PROJECTS, proj)
+            if not os.path.isdir(pdir):
+                continue
+            for name in os.listdir(pdir):
+                if not name.endswith(".jsonl"):
+                    continue
+                path = os.path.join(pdir, name)
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    continue
+                key = proj + "/" + name
+                start = files.get(key, 0)
+                if start > size:
+                    start = 0
+                if start == size:
+                    continue
+                try:
+                    with open(path, "rb") as fh:
+                        fh.seek(start)
+                        chunk = fh.read()
+                except OSError:
+                    continue
+                end = chunk.rfind(b"\n") + 1          # only complete lines
+                for raw in chunk[:end].split(b"\n"):
+                    if b"userEmail" not in raw and b"rate_limit_info" not in raw:
+                        continue
+                    try:
+                        d = json.loads(raw.decode("utf-8", "replace"))
+                    except ValueError:
+                        continue
+                    t = _iso_ms(d.get("timestamp"))
+                    if not t:
+                        continue
+                    if b"userEmail" in raw:
+                        m = _EMAIL_RX.search(raw.decode("utf-8", "replace"))
+                        if m:
+                            emails.add((t, m.group(1).lower()))
+                    if b"rate_limit_info" in raw:
+                        stack = [d]
+                        while stack:
+                            o = stack.pop()
+                            if isinstance(o, dict):
+                                ri = o.get("rate_limit_info")
+                                if isinstance(ri, dict) and ri.get("resetsAt") and ri.get("rateLimitType"):
+                                    limits.add((t, ri["rateLimitType"], int(ri["resetsAt"]) * 1000))
+                                stack.extend(o.values())
+                            elif isinstance(o, list):
+                                stack.extend(o)
+                files[key] = start + end
+                changed = True
+    if changed:
+        write_json(EVENTS_FILE, {"version": 1, "files": files,
+                                 "emails": sorted(emails)[-5000:], "limits": sorted(limits)[-5000:]})
+    return sorted(emails), sorted(limits)
+
+
+def _sample_after(samples, t, within_ms):
+    for s in samples:
+        if s["t"] >= t:
+            return s if s["t"] - t <= within_ms else None
+    return None
+
+
+def learn_identities(samples=None, email_events=None):
+    """Work out which email belongs to which organization (account).
+    1. ~/.claude.json and its backups hold (organization, email) as a pair — taken as fact.
+    2. The desktop app writes the signed-in email into every new conversation; the next usage
+       sample the app records (within 30 min) names the organization. Accepted on a clear majority.
+    Stored only in the vault."""
+    names = account_names()
+    changed = False
+    fixed = {}
     found = []
-    cur = current_identity()
+    cur = _identity_from(CLAUDE_JSON)
     if cur:
         found.append(cur)
     if os.path.isdir(CLAUDE_JSON_BACKUPS):
@@ -1043,72 +1130,133 @@ def learn_identities():
                 i = _identity_from(os.path.join(CLAUDE_JSON_BACKUPS, n))
                 if i:
                     found.append(i)
-    if not found:
-        return cur
-    names = account_names()
-    changed = False
-    for i in sorted(found, key=lambda x: x["seen"]):
-        rec = names.setdefault(i["org"], {})
-        for key in ("email", "displayName", "account"):
-            if i.get(key) and rec.get(key) != i[key] and i["seen"] >= rec.get("seen", 0):
-                rec[key] = i[key]
-                changed = True
-        if i["seen"] > rec.get("seen", 0):
-            rec["seen"] = i["seen"]
+    for i in found:
+        if i.get("email"):
+            fixed[i["org"]] = i["email"].lower()
+
+    if samples is not None and email_events:
+        votes = {}
+        for t, email in email_events:
+            s = _sample_after(samples, t, 30 * 60 * 1000)
+            if s:
+                votes.setdefault(email, {}).setdefault(s["org"], 0)
+                votes[email][s["org"]] += 1
+        # strongest pairs first, so a stray vote can never take an account from its real owner
+        pairs = sorted(((n, email, org) for email, by_org in votes.items() for org, n in by_org.items()),
+                       reverse=True)
+        for n, email, org in pairs:
+            total = sum(votes[email].values())
+            if n >= 2 and n / total >= 0.6 and org not in fixed and email not in fixed.values():
+                fixed[org] = email
+
+    for org, email in fixed.items():
+        rec = names.setdefault(org, {})
+        if rec.get("email") != email:
+            rec["email"] = email
+            changed = True
+    # an email can only belong to one organization: drop stale duplicates
+    for org, rec in names.items():
+        e = rec.get("email")
+        if e and org not in fixed and e in fixed.values():
+            rec.pop("email")
             changed = True
     if changed:
         write_json(ACCOUNTS_FILE, names)
     return cur
 
 
+def _attribute_limit(samples, t, kind):
+    """Which organization hit this limit? The one whose usage sample around that time is full."""
+    key = "fh" if kind == "five_hour" else "sd"
+    best = None
+    for s in samples:
+        gap = abs(s["t"] - t)
+        if gap <= 3 * 3600 * 1000 and (s.get("u") or {}).get(key, 0) >= 95:
+            if best is None or gap < best[0]:
+                best = (gap, s["org"])
+    return best[1] if best else None
+
+
 def usage_data(now_ms=None):
-    """Per-account quota status, with estimates for when limits reset."""
+    """Per-account quota status with the next reset of each limit (exact when Claude reported it)."""
     now = now_ms or int(time.time() * 1000)
     samples = merge_usage()
-    ident = learn_identities()
+    try:
+        email_events, limit_events = scan_transcripts()
+    except Exception:
+        email_events, limit_events = [], []
+    learn_identities(samples, email_events)
     names = account_names()
+
+    exact = {}                                    # org -> {"five_hour": [resetsAt...], "seven_day": [...]}
+    for t, kind, reset in limit_events:
+        org = _attribute_limit(samples, t, kind)
+        if org:
+            exact.setdefault(org, {}).setdefault(kind, []).append(reset)
+
     by_org = {}
     for x in samples:
         u = x.get("u") or {}
         if "fh" in u or "sd" in u:
             by_org.setdefault(x["org"], []).append(x)
-    current = (ident or {}).get("org") or (samples[-1]["org"] if samples else None)
-    for org in names:                          # accounts we know by email but without usage yet
+    current = samples[-1]["org"] if samples else (_identity_from(CLAUDE_JSON) or {}).get("org")
+    for org in names:
         if names[org].get("email") and org not in by_org:
             by_org[org] = []
+
     out = []
-    for i, (org, xs) in enumerate(sorted(by_org.items(), key=lambda kv: kv[0])):
+    for org, xs in by_org.items():
         last = xs[-1] if xs else {"u": {}, "t": 0}
         fh, sd, t = last["u"].get("fh"), last["u"].get("sd"), last["t"]
-        # five-hour window: a sample older than 5 h means that window is over for sure
-        fh_reset_at, fh_now, fh_est = None, fh, False
-        if fh is not None:
+        ex = exact.get(org, {})
+
+        # ---- five-hour window
+        fh_now, fh_est, fh_reset, fh_exact = fh, False, None, False
+        future = [r for r in ex.get("five_hour", []) if r > now]
+        if fh is not None and future:
+            fh_reset, fh_exact = min(future), True
+        elif fh is not None:
             if now - t >= FIVE_H:
                 fh_now, fh_est = 0, True
             elif fh > 0:
-                start = t                       # earliest sample of the current run of usage
+                start = t
                 for y in reversed(xs[:-1]):
                     if (y["u"].get("fh") or 0) == 0 or start - y["t"] >= FIVE_H:
                         break
                     start = y["t"]
-                fh_reset_at = start + FIVE_H    # the window began at or before `start`
-        # weekly window: it starts at the first usage after a reset (0 % or a clear drop).
-        # `start` is the earliest sample we know is inside the current window, so the
-        # window resets at the latest start + 7 days.
-        sd_reset_at, sd_now, sd_est, start, prev = None, sd, False, None, None
-        for y in xs:
-            v = y["u"].get("sd")
-            if v is None:
-                continue
-            if v == 0:
-                start = None
-            elif start is None or (prev is not None and v < prev - 10):
-                start = y["t"]
-            prev = v
-        if start is not None:
-            sd_reset_at = start + WEEK
-            if now >= sd_reset_at:
-                sd_now, sd_est, sd_reset_at = 0, True, None
+                fh_reset = start + FIVE_H
+        if fh_reset and fh_reset <= now:
+            fh_now, fh_est, fh_reset = 0, True, None
+
+        # ---- weekly window: Claude resets it at the same weekday and time every week
+        sd_now, sd_est, sd_reset, sd_exact = sd, False, None, False
+        anchors = ex.get("seven_day", [])
+        if anchors:
+            a = max(anchors)
+            while a <= now:
+                a += WEEK
+            while a - WEEK > now:
+                a -= WEEK
+            sd_reset, sd_exact = a, True
+            if max(anchors) <= now and t < max(anchors):   # a reset happened after the last sample
+                sd_now, sd_est = 0, True
+        elif sd is not None:
+            start, prev = None, None
+            for y in xs:
+                v = y["u"].get("sd")
+                if v is None:
+                    continue
+                if v == 0:
+                    start = None
+                elif start is None or (prev is not None and v < prev - 10):
+                    start = y["t"]
+                prev = v
+            if start is not None:
+                sd_reset = start + WEEK
+                while sd_reset <= now:
+                    sd_reset += WEEK
+                    sd_now, sd_est = 0, True
+
         rec = names.get(org) or {}
         out.append({
             "org": org,
@@ -1117,13 +1265,51 @@ def usage_data(now_ms=None):
             "named": bool(rec.get("name")),
             "current": org == current,
             "updatedAt": t,
-            "fiveHour": fh_now, "fiveHourEstimated": fh_est, "fiveHourResetAt": fh_reset_at,
-            "weekly": sd_now, "weeklyEstimated": sd_est, "weeklyResetAt": sd_reset_at,
+            "fiveHour": fh_now, "fiveHourEstimated": fh_est, "fiveHourResetAt": fh_reset, "fiveHourResetExact": fh_exact,
+            "weekly": sd_now, "weeklyEstimated": sd_est, "weeklyResetAt": sd_reset, "weeklyResetExact": sd_exact,
+            "fiveHourReset": reset_parts(fh_reset, fh_exact), "weeklyReset": reset_parts(sd_reset, sd_exact),
             "samples": len(xs),
         })
-    out.sort(key=lambda a: (not a["current"], a["name"].lower()))
+    out.sort(key=lambda a: (not a["current"], (a["email"] or "~" + a["name"]).lower()))
     return {"now": now, "current": current, "accounts": out, "source": USAGE_SRC,
             "sourceFound": os.path.exists(USAGE_SRC)}
+
+
+def reset_parts(ms, exact):
+    """Pieces the UIs show for a reset time: when, ISO week, countdown, exact or estimated."""
+    if not ms:
+        return None
+    d = dt.datetime.fromtimestamp(ms / 1000)
+    left = max(0, int(ms / 1000 - time.time()))
+    days, hours, mins = left // 86400, left % 86400 // 3600, left % 3600 // 60
+    span = (T(f"{days} 天 {hours} 小时", f"{days}d {hours}h") if days else
+            T(f"{hours} 小时 {mins} 分", f"{hours}h {mins}m") if hours else T(f"{mins} 分钟", f"{mins}m"))
+    today = dt.date.today()
+    day = (T("今天", "Today") if d.date() == today else
+           T("明天", "Tomorrow") if d.date() == today + dt.timedelta(days=1) else
+           T(f"{d.month}月{d.day}日", f"{d:%b} {d.day}"))
+    wd = T("周" + "一二三四五六日"[d.weekday()], d.strftime("%a"))
+    return {"at": ms, "exact": bool(exact),
+            "when": T(f"{wd} {day} {d:%H:%M}", f"{wd}, {day} {d:%H:%M}"),
+            "date": d.strftime("%Y-%m-%d"),
+            "week": T(f"第 {d.isocalendar()[1]} 周", f"week {d.isocalendar()[1]}"),
+            "in": T(f"还有 {span}", f"in {span}")}
+
+
+def describe_reset(ms, exact):
+    """'周三 11月25日 17:00（第 48 周）· 还有 2 天 3 小时' / 'Wed Nov 25, 17:00 (week 48) · in 2d 3h'."""
+    if not ms:
+        return ""
+    d = dt.datetime.fromtimestamp(ms / 1000)
+    wk = d.isocalendar()[1]
+    left = max(0, int(ms / 1000 - time.time()))
+    days, hours, mins = left // 86400, left % 86400 // 3600, left % 3600 // 60
+    span = (T(f"{days} 天 {hours} 小时", f"{days}d {hours}h") if days else
+            T(f"{hours} 小时 {mins} 分", f"{hours}h {mins}m") if hours else T(f"{mins} 分钟", f"{mins}m"))
+    wd = T("一二三四五六日"[d.weekday()], d.strftime("%a"))
+    text = T(f"周{wd} {d.month}月{d.day}日 {d:%H:%M}（第 {wk} 周）· 还有 {span}",
+             f"{wd} {d:%b} {d.day}, {d:%H:%M} (week {wk}) · in {span}")
+    return text + ("" if exact else T("（估计）", " (est.)"))
 
 
 def cmd_usage(args):
@@ -1148,12 +1334,12 @@ def cmd_usage(args):
 
     for a in data["accounts"]:
         mark = T("  <- 当前", "  <- current") if a["current"] else ""
-        print(f"{a['name']} <{a.get('email') or '?'}> [{a['org'][:8]}]{mark}")
+        print(f"{a.get('email') or a['name']} [{a['org'][:8]}]{mark}")
         print(T("  5 小时：", "  5-hour: ") + pct(a["fiveHour"], a["fiveHourEstimated"])
-              + (T(f"，最晚约 {fmt_ms(a['fiveHourResetAt'])} 恢复", f", resets by ~{fmt_ms(a['fiveHourResetAt'])}")
+              + (T("，下次恢复：", ", next reset: ") + describe_reset(a["fiveHourResetAt"], a["fiveHourResetExact"])
                  if a["fiveHourResetAt"] else ""))
         print(T("  每周：  ", "  Weekly: ") + pct(a["weekly"], a["weeklyEstimated"])
-              + (T(f"，约 {fmt_ms(a['weeklyResetAt'])} 重置", f", resets ~{fmt_ms(a['weeklyResetAt'])}")
+              + (T("，下次重置：", ", next reset: ") + describe_reset(a["weeklyResetAt"], a["weeklyResetExact"])
                  if a["weeklyResetAt"] else ""))
         print(T(f"  数据时间：{fmt_ms(a['updatedAt'])}", f"  as of: {fmt_ms(a['updatedAt'])}"))
 

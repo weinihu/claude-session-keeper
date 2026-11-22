@@ -507,15 +507,16 @@ class App:
             label(t, self.sub_of(a), 9, color=MUTED if a.get("named") else FAINT, bg=bgc).pack(anchor="w")
             label(t, (tr("更新于 ", "as of ") + short_time(a.get("updatedAt"))) if a.get("updatedAt") else
                   tr("暂无用量记录", "no usage yet"), 8, color=FAINT, bg=bgc).pack(anchor="w")
+            def note_of(r, idle):
+                if not r:
+                    return idle
+                return f"{r['when']} · {r['week']} · {r['in']}" + ("" if r.get("exact") else tr("（估计）", " (est.)"))
             for v, est, note in (
                     (a.get("weekly"), a.get("weeklyEstimated"),
-                     (tr("约 ", "~") + short_time(a["weeklyResetAt"]) + tr(" 重置", " reset")) if a.get("weeklyResetAt")
-                     else (tr("应已重置", "should be reset") if a.get("weeklyEstimated") else "")),
+                     note_of(a.get("weeklyReset"), tr("重置时间未知", "reset unknown") if a.get("weekly") is not None else "")),
                     (a.get("fiveHour"), a.get("fiveHourEstimated"),
-                     (tr("最晚 ", "by ") + short_time(a["fiveHourResetAt"]) + tr(" 恢复", "")) if a.get("fiveHourResetAt")
-                     else (tr("应已恢复", "should be reset") if a.get("fiveHourEstimated") else
-                           (tr("可用", "available") if a.get("fiveHour") is not None else "")))):
-                cell = tk.Frame(inner, bg=bgc, width=170)
+                     note_of(a.get("fiveHourReset"), tr("现在可用", "available now") if a.get("fiveHour") is not None else ""))):
+                cell = tk.Frame(inner, bg=bgc, width=260)
                 cell.pack(side="right", padx=(8, 0))
                 line = tk.Frame(cell, bg=bgc)
                 line.pack(anchor="w")
