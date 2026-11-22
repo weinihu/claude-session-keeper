@@ -32,28 +32,28 @@ for i, (proj, title, hrs) in enumerate(chats):
     m = {"sessionId": sid, "cliSessionId": cid, "cwd": cwd, "createdAt": t - H, "lastActivityAt": t,
          "title": title, "model": "claude-opus-5-5", "isArchived": False}
     if i < 2:
-        json.dump(m, open(os.path.join(sess, sid + ".json"), "w"))
-    json.dump(dict(m, _vault={"fromAccount": ACC}), open(os.path.join(vault, "sessions", sid + ".json"), "w"))
+        json.dump(m, open(os.path.join(sess, sid + ".json"), "w", encoding="utf-8"))
+    json.dump(dict(m, _vault={"fromAccount": ACC}), open(os.path.join(vault, "sessions", sid + ".json"), "w", encoding="utf-8"))
     pd = os.path.join(projects, "".join(c if c.isalnum() else "-" for c in cwd))
     os.makedirs(pd, exist_ok=True)
-    open(os.path.join(pd, cid + ".jsonl"), "w").write(json.dumps({"type": "user", "cwd": cwd, "message": {"content": title}}) + "\n")
+    open(os.path.join(pd, cid + ".jsonl"), "w", encoding="utf-8").write(json.dumps({"type": "user", "cwd": cwd, "message": {"content": title}}) + "\n")
 
-json.dump({"lastKnownAccountUuid": ACC}, open(os.path.join(app, "config.json"), "w"))
+json.dump({"lastKnownAccountUuid": ACC}, open(os.path.join(app, "config.json"), "w", encoding="utf-8"))
 samples = []
 for org, seq in [(O2, [(-120, 0, 0), (-118, 30, 6), (-9, 100, 100)]), (O3, [(-60, 0, 0), (-58, 20, 4), (-30, 100, 38)]),
                  (O1, [(-100, 0, 0), (-99, 10, 3), (-3, 40, 47), (-1, 72, 52)]), (O4, [(-26, 0, 20)])]:
     samples += [{"t": now + h * H, "org": org, "u": {"fh": fh, "sd": sd}} for h, fh, sd in seq]
 json.dump({"version": 2, "samples": sorted(samples, key=lambda x: x["t"])},
-          open(os.path.join(app, "plan-usage-history.json"), "w"))
+          open(os.path.join(app, "plan-usage-history.json"), "w", encoding="utf-8"))
 json.dump({"oauthAccount": {"organizationUuid": O1, "emailAddress": "alex.work@example.com"}},
-          open(os.path.join(D, "claude.json"), "w"))
+          open(os.path.join(D, "claude.json"), "w", encoding="utf-8"))
 names = {"zh": ("工作号", "个人号", "副业号"), "en": ("Work", "Personal", "Side project")}[lang]
 json.dump({O1: {"name": names[0], "email": "alex.work@example.com"},
            O2: {"name": names[1], "email": "alex.chen@example.com"},
            O3: {"name": names[2], "email": "studio.alex@example.com"}},
-          open(os.path.join(vault, "accounts.json"), "w"), ensure_ascii=False)
-cfg = json.load(open(os.path.join(os.path.dirname(__file__), "..", "config.default.json")))
-json.dump(cfg, open(os.path.join(vault, "config.json"), "w"))
+          open(os.path.join(vault, "accounts.json"), "w", encoding="utf-8"), ensure_ascii=False)
+cfg = json.load(open(os.path.join(os.path.dirname(__file__), "..", "config.default.json"), encoding="utf-8"))
+json.dump(cfg, open(os.path.join(vault, "config.json"), "w", encoding="utf-8"))
 open(os.path.join(vault, "last-run"), "w").close()
 
 env = {"CSV_APP_DIR": app, "CSV_VAULT": vault, "CSV_SESS_ROOT": os.path.join(app, "claude-code-sessions"),

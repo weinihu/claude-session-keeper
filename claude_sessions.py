@@ -1439,6 +1439,11 @@ def cmd_uninstall_agent(args):
 
 # ---------------------------------------------------------------- main
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     p = argparse.ArgumentParser(description="Claude 换号恢复对话")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("backup", help="把所有账号的会话列表存进保险库")

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import queue
 import threading
 import time
 import webbrowser
@@ -126,9 +127,10 @@ def command_for_core(args):
 
 def run_core(args, timeout=180):
     """Run the core and return (returncode, output)."""
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     try:
         r = subprocess.run(command_for_core(args), capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout,
+                           errors="replace", timeout=timeout, env=env,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError) as exc:
         return -1, str(exc)
@@ -240,6 +242,7 @@ class App:
         self.page = os.environ.get("CSV_PAGE") or "overview"
         self.busy = False
         self.log_lines = []
+        self.inbox = queue.Queue()          # results from worker threads, applied on the Tk thread
         root.title(tr("Claude 换号助手", "Session Keeper for Claude"))
         root.geometry("980x660")
         root.minsize(900, 600)
@@ -261,8 +264,21 @@ class App:
         self.content = tk.Frame(root, bg=BG)
         self.content.pack(side="left", fill="both", expand=True)
         self.build_sidebar()
+        self.root.after(50, self.pump)
         self.refresh()
         self.root.after(4000, self.poll)
+
+    def pump(self):
+        """Run callbacks queued by worker threads (Tk may only be touched from its own thread)."""
+        try:
+            while True:
+                self.inbox.get_nowait()()
+        except queue.Empty:
+            pass
+        self.root.after(50, self.pump)
+
+    def later(self, fn):
+        self.inbox.put(fn)
 
     # ---------------------------------------------------------------- data
     def refresh(self, rerender=True):
@@ -271,7 +287,7 @@ class App:
             us = core_json(["usage", "--json"]) or {}
             vault = Path(os.environ.get("CSV_VAULT", ""))
             cfg = load_json(vault / "config.json", {}) or {}
-            self.root.after(0, lambda: self._apply(st, us, cfg.get("keep_rules") or {}, rerender))
+            self.later(lambda: self._apply(st, us, cfg.get("keep_rules") or {}, rerender))
         threading.Thread(target=work, daemon=True).start()
 
     def _apply(self, st, us, rules, rerender):
@@ -302,7 +318,7 @@ class App:
                 if after:
                     after()
                 self.refresh()
-            self.root.after(0, done)
+            self.later(done)
         threading.Thread(target=work, daemon=True).start()
 
     # ---------------------------------------------------------------- sidebar
