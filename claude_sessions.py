@@ -1011,6 +1011,24 @@ def account_names():
 CLAUDE_JSON = os.environ.get("CSV_CLAUDE_JSON") or os.path.join(HOME, ".claude.json")
 CLAUDE_JSON_BACKUPS = os.environ.get("CSV_CLAUDE_JSON_BACKUPS") or os.path.join(HOME, ".claude", "backups")
 EVENTS_FILE = os.path.join(VAULT, "transcript-events.json")
+STATUSLINE_FILE = os.path.join(VAULT, "statusline-usage.jsonl")
+
+
+def statusline_samples(max_age_ms=7 * 86400 * 1000):
+    """Official rate limits captured by the Claude Code statusline hook (exact % and reset times)."""
+    out, cutoff = [], int(time.time() * 1000) - max_age_ms
+    try:
+        with open(STATUSLINE_FILE, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("t", 0) >= cutoff:
+                    out.append(r)
+    except OSError:
+        pass
+    return out
 _EMAIL_RX = re.compile(r"email address is ([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})")
 
 
@@ -1241,6 +1259,21 @@ def usage_data(now_ms=None):
     names = account_names()
     blocks = five_hour_blocks(prompt_events, samples, email_events, names)
 
+    # official statusline captures: attribute each to the account signed in at that moment
+    email2org = {r["email"]: o for o, r in names.items() if r.get("email")}
+    tl = sorted([(x["t"], x["org"]) for x in samples] +
+                [(t, email2org[e]) for t, e in email_events if e in email2org])
+    official = {}
+    for r in statusline_samples():
+        org = None
+        for t0, o in tl:
+            if t0 <= r["t"]:
+                org = o
+            else:
+                break
+        if org and (org not in official or r["t"] > official[org]["t"]):
+            official[org] = r
+
     exact = {}                                    # org -> {"five_hour": [resetsAt...], "seven_day": [...]}
     for t, kind, reset in limit_events:
         org = _attribute_limit(samples, t, kind)
@@ -1315,6 +1348,27 @@ def usage_data(now_ms=None):
                 while sd_reset <= now:
                     sd_reset += WEEK
                     sd_now, sd_est = 0, True
+
+        # ---- exact numbers from Claude Code's statusline win over everything above
+        off = official.get(org)
+        if off and off["t"] >= t:
+            fhw, sdw = off.get("five_hour") or {}, off.get("seven_day") or {}
+            if fhw.get("resets_at"):
+                r = int(fhw["resets_at"]) * 1000
+                if r > now:
+                    fh_now, fh_est, fh_reset, fh_exact = round(fhw.get("used") or 0), False, r, True
+                else:
+                    fh_now, fh_est, fh_reset, fh_exact = 0, True, None, False
+            if sdw.get("resets_at"):
+                r = int(sdw["resets_at"]) * 1000
+                if r > now:
+                    sd_now, sd_est, sd_reset, sd_exact = round(sdw.get("used") or 0), False, r, True
+                else:
+                    sd_now, sd_est = 0, True
+                    while r <= now:
+                        r += WEEK
+                    sd_reset, sd_exact = r, True
+            t = max(t, off["t"])
 
         rec = names.get(org) or {}
         out.append({

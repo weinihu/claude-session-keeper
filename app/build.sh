@@ -38,6 +38,7 @@ EOF
 R="$APP/Contents/Resources"
 cp AppIcon.icns "$R/"
 cp "$ROOT/claude_sessions.py" "$R/"
+cp statusline_capture.py "$R/"
 cp "$ROOT/config.default.json" "$R/"
 mkdir -p "$R/en.lproj" "$R/zh-Hans.lproj"
 printf '"CFBundleDisplayName" = "%s";\n"CFBundleName" = "%s";\n' "$NAME" "$NAME" > "$R/en.lproj/InfoPlist.strings"

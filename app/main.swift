@@ -118,6 +118,13 @@ final class Model: ObservableObject {
             try? fm.removeItem(atPath: script)
             try? fm.copyItem(atPath: bundled, toPath: script)
         }
+        if let sl = Bundle.main.path(forResource: "statusline_capture", ofType: "py") {
+            let dst = vaultDir + "/statusline_capture.py"
+            if !fm.contentsEqual(atPath: sl, andPath: dst) {
+                try? fm.removeItem(atPath: dst)
+                try? fm.copyItem(atPath: sl, toPath: dst)
+            }
+        }
         if !fm.fileExists(atPath: configPath),
            let def = Bundle.main.path(forResource: "config.default", ofType: "json") {
             try? fm.copyItem(atPath: def, toPath: configPath)

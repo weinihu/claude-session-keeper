@@ -80,6 +80,20 @@ class UsageCoreTests(unittest.TestCase):
         # B never hit a limit: no exact time, but still an estimate
         self.assertFalse(acc["org-b"]["weeklyResetExact"])
 
+    def test_statusline_capture_is_exact(self):
+        # Claude Code's statusline reported official numbers for B a moment ago
+        reset5 = (self.now + 3 * H) // 1000
+        reset7 = (self.now + 4 * 24 * H) // 1000
+        rec = {"t": self.now - 60000, "session": "s",
+               "five_hour": {"used": 37.5, "resets_at": reset5}, "seven_day": {"used": 23, "resets_at": reset7}}
+        (Path(self.env["CSV_VAULT"]) / "statusline-usage.jsonl").write_text(json.dumps(rec) + "\n")
+        b = self.usage()["org-b"]
+        self.assertTrue(b["fiveHourResetExact"])
+        self.assertEqual(b["fiveHourResetAt"] // 1000, reset5)
+        self.assertEqual(b["fiveHour"], 38)
+        self.assertTrue(b["weeklyResetExact"])
+        self.assertEqual(b["weekly"], 23)
+
     def test_second_run_reads_only_new_lines(self):
         self.usage()
         events = json.loads((Path(self.env["CSV_VAULT"]) / "transcript-events.json").read_text())
