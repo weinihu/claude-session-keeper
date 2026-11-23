@@ -1392,7 +1392,9 @@ def usage_data(now_ms=None):
     out.sort(key=lambda a: (not a["current"], (a["email"] or "~" + a["name"]).lower()))
     live = load_json(LIVE_STATUS, {}) or {}
     exact = {"enabled": bool(tool_config().get("exact_mode")), "ok": live.get("ok"), "error": live.get("error"),
-             "email": live.get("email"), "org": live.get("org"), "lastOk": live.get("lastOk")}
+             "detail": live.get("detail"), "email": live.get("email"), "org": live.get("org"),
+             "lastOk": live.get("lastOk"), "autoOffAt": live.get("autoOffAt"),
+             "lockedIp": _mask_ip((live.get("lock") or {}).get("ip")), "count": live.get("count", 0)}
     return {"now": now, "current": current, "accounts": out, "source": USAGE_SRC, "exact": exact,
             "sourceFound": os.path.exists(USAGE_SRC)}
 
@@ -1473,7 +1475,8 @@ def cmd_usage(args):
 LIVE_FILE = os.path.join(VAULT, "live-usage.jsonl")
 LIVE_STATUS = os.path.join(VAULT, "live-status.json")
 USAGE_URL = os.environ.get("CSV_USAGE_URL") or "https://api.anthropic.com/api/oauth/usage"
-LIVE_INTERVAL = 5 * 60 * 1000
+LIVE_INTERVAL = 10 * 60 * 1000
+LIVE_DAILY_CAP = 60
 TOOL_VERSION = "1.2.0"
 
 
@@ -1517,17 +1520,120 @@ def _parse_reset(v):
     return ms or None
 
 
-def fetch_live_usage(force=False):
-    """One read of the official usage for the account Claude Code is signed in to. Rate-limited."""
+def _local_network_signature():
+    """What this Mac's network path looks like right now: default route, proxies, VPN tunnels."""
+    if os.environ.get("CSV_LOCAL_SIG") is not None:      # tests
+        return os.environ["CSV_LOCAL_SIG"]
+    parts = []
+    try:
+        if sys.platform == "darwin":
+            r = subprocess.run(["route", "-n", "get", "default"], capture_output=True, text=True, timeout=5)
+            parts += [l.strip() for l in r.stdout.splitlines() if l.strip().startswith(("gateway:", "interface:"))]
+            r = subprocess.run(["scutil", "--proxy"], capture_output=True, text=True, timeout=5)
+            parts.append("proxy:" + __import__("hashlib").sha1(r.stdout.encode()).hexdigest()[:12])
+            r = subprocess.run(["ifconfig", "-l"], capture_output=True, text=True, timeout=5)
+            parts.append("tunnels:" + ",".join(sorted(x for x in r.stdout.split() if x.startswith(("utun", "ppp", "ipsec", "tun", "tap")))))
+        elif IS_WINDOWS:
+            r = subprocess.run(["route", "print", "0.0.0.0"], capture_output=True, text=True, timeout=5)
+            parts.append("routes:" + __import__("hashlib").sha1(r.stdout.encode(errors="ignore")).hexdigest()[:12])
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for k in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        if os.environ.get(k):
+            parts.append(k.lower() + ":" + os.environ[k])
+    return " | ".join(parts)
+
+
+def _egress_ip():
+    """Public outbound IP, fetched through the same proxy path as the usage request.
+    None means offline (then nothing is sent to Anthropic)."""
+    import urllib.request
+    url = os.environ.get("CSV_EGRESS_URL") or "https://1.1.1.1/cdn-cgi/trace"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": f"session-keeper/{TOOL_VERSION}"}),
+                                    timeout=6) as r:
+            text = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    for line in text.splitlines():
+        if line.startswith("ip="):
+            return line[3:].strip()
+    return None
+
+
+def _disable_exact(status, reason, detail=None):
+    cfg_path = os.path.join(VAULT, "config.json")
+    cfg = load_json(cfg_path, {}) or {}
+    cfg["exact_mode"] = False
+    write_json(cfg_path, cfg)
+    status.update({"ok": False, "error": reason, "detail": detail, "autoOffAt": int(time.time() * 1000)})
+    status.pop("lock", None)
+    write_json(LIVE_STATUS, status)
+    return status
+
+
+def _recent_activity_ms():
+    """Newest sign of you using Claude: transcript writes or the app's own usage record."""
+    newest = 0
+    try:
+        newest = int(os.path.getmtime(USAGE_SRC) * 1000)
+    except OSError:
+        pass
+    if os.path.isdir(PROJECTS):
+        for proj in os.listdir(PROJECTS):
+            pdir = os.path.join(PROJECTS, proj)
+            if not os.path.isdir(pdir):
+                continue
+            for n in os.listdir(pdir):
+                if n.endswith(".jsonl"):
+                    try:
+                        newest = max(newest, int(os.path.getmtime(os.path.join(pdir, n)) * 1000))
+                    except OSError:
+                        pass
+    return newest
+
+
+def fetch_live_usage(force=False, relock=False):
+    """One guarded read of the official usage for the account Claude Code is signed in to.
+    Nothing is sent to Anthropic unless every check passes:
+      on · under the daily cap · 10 min since the last read · you used Claude since then ·
+      online · same egress IP and local network as when it was turned on · token not expired.
+    Any network change, or repeated errors, turn exact mode off by itself."""
     import urllib.error
     import urllib.request
     cfg = tool_config()
     status = load_json(LIVE_STATUS, {}) or {}
     now = int(time.time() * 1000)
-    if not cfg.get("exact_mode") and not force:
+    if not cfg.get("exact_mode"):
         return status
-    if not force and now < max(status.get("nextAt", 0), status.get("lastAttempt", 0) + LIVE_INTERVAL):
+    day = time.strftime("%Y-%m-%d")
+    if status.get("day") != day:
+        status.update({"day": day, "count": 0})
+    if status.get("count", 0) >= LIVE_DAILY_CAP:
+        status.update({"ok": False, "error": "daily_cap"})
+        write_json(LIVE_STATUS, status)
         return status
+    if not force:
+        if now < max(status.get("nextAt", 0), status.get("lastAttempt", 0) + LIVE_INTERVAL):
+            return status
+        if status.get("lastOk") and _recent_activity_ms() <= status["lastOk"]:
+            return status                                   # you haven't used Claude since: nothing new to read
+
+    # ---- network guard (offline → skip; anything different from the locked environment → turn off)
+    ip = _egress_ip()
+    if not ip:
+        status.update({"ok": False, "error": "offline", "lastCheck": now})
+        write_json(LIVE_STATUS, status)
+        return status
+    sig = _local_network_signature()
+    lock = status.get("lock")
+    if relock or not lock:
+        lock = {"ip": ip, "local": sig, "at": now}
+        status["lock"] = lock
+    elif ip != lock.get("ip") or sig != lock.get("local"):
+        changed = [k for k, a, b in (("ip", ip, lock.get("ip")), ("local", sig, lock.get("local"))) if a != b]
+        return _disable_exact(status, "env_changed", ",".join(changed))
+
     ident = _identity_from(CLAUDE_JSON) or {}
     status.update({"lastAttempt": now, "email": ident.get("email"), "org": ident.get("org")})
     creds = _cli_credentials()
@@ -1536,7 +1642,7 @@ def fetch_live_usage(force=False):
         write_json(LIVE_STATUS, status)
         return status
     if creds.get("expiresAt") and int(creds["expiresAt"]) <= now:
-        # don't refresh it ourselves (that would rotate Claude Code's token); Claude Code does it on next use
+        # never refresh it ourselves (that would rotate Claude Code's token); Claude Code renews it on next use
         status.update({"ok": False, "error": "token_expired", "nextAt": now + LIVE_INTERVAL})
         write_json(LIVE_STATUS, status)
         return status
@@ -1546,16 +1652,23 @@ def fetch_live_usage(force=False):
         "Accept": "application/json",
         "User-Agent": f"session-keeper/{TOOL_VERSION} (+https://github.com/weinihu/claude-session-keeper)",
     })
+    status["count"] = status.get("count", 0) + 1
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        back = 30 * 60 * 1000 if e.code == 429 else LIVE_INTERVAL
+        status["failures"] = status.get("failures", 0) + 1
+        if e.code in (401, 403) or status["failures"] >= 3:
+            return _disable_exact(status, f"http_{e.code}", "repeated" if status["failures"] >= 3 else None)
+        back = 30 * 60 * 1000 if e.code == 429 else LIVE_INTERVAL * status["failures"]
         status.update({"ok": False, "error": f"http_{e.code}", "nextAt": now + back})
         write_json(LIVE_STATUS, status)
         return status
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        status.update({"ok": False, "error": "network", "nextAt": now + LIVE_INTERVAL})
+    except (urllib.error.URLError, OSError, ValueError):
+        status["failures"] = status.get("failures", 0) + 1
+        if status["failures"] >= 3:
+            return _disable_exact(status, "network", "repeated")
+        status.update({"ok": False, "error": "network", "nextAt": now + LIVE_INTERVAL * status["failures"]})
         write_json(LIVE_STATUS, status)
         return status
     rec = {"t": now, "org": ident.get("org"), "source": "oauth_usage"}
@@ -1567,11 +1680,21 @@ def fetch_live_usage(force=False):
     if rec.get("org") and ("five_hour" in rec or "seven_day" in rec):
         with open(LIVE_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
-    status.update({"ok": True, "error": None, "lastOk": now, "nextAt": now + LIVE_INTERVAL,
+    status.update({"ok": True, "error": None, "detail": None, "failures": 0, "lastOk": now,
+                   "nextAt": now + LIVE_INTERVAL,
                    "fiveHour": (rec.get("five_hour") or {}).get("used"),
                    "weekly": (rec.get("seven_day") or {}).get("used")})
     write_json(LIVE_STATUS, status)
     return status
+
+
+def _mask_ip(ip):
+    if not ip:
+        return None
+    if ":" in ip:
+        return ":".join(ip.split(":")[:2]) + ":…"
+    p = ip.split(".")
+    return ".".join(p[:2] + ["*", "*"]) if len(p) == 4 else ip
 
 
 def live_samples(max_age_ms=7 * 86400 * 1000):
@@ -1591,15 +1714,24 @@ def live_samples(max_age_ms=7 * 86400 * 1000):
 
 
 def cmd_live(args):
+    relock = False
     if args.enable is not None:
         cfg_path = os.path.join(VAULT, "config.json")
         cfg = load_json(cfg_path, {}) or {}
         cfg["exact_mode"] = args.enable == "on"
         write_json(cfg_path, cfg)
-    st = fetch_live_usage(force=args.force)
-    st = dict(st, enabled=bool(tool_config().get("exact_mode")))
+        st = load_json(LIVE_STATUS, {}) or {}
+        st.pop("lock", None)
+        if args.enable == "on":
+            st.update({"failures": 0, "error": None, "detail": None, "autoOffAt": None})
+            relock = True
+        write_json(LIVE_STATUS, st)
+    st = fetch_live_usage(force=args.force or relock, relock=relock)
+    out = {k: v for k, v in st.items() if k != "lock"}
+    out["enabled"] = bool(tool_config().get("exact_mode"))
+    out["lockedIp"] = _mask_ip((st.get("lock") or {}).get("ip"))
     if args.json:
-        print(json.dumps(st, ensure_ascii=False))
+        print(json.dumps(out, ensure_ascii=False))
         return
     if st.get("ok"):
         print(T(f"精确模式：{st.get('email')} 5 小时 {st.get('fiveHour')}% · 每周 {st.get('weekly')}%",

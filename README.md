@@ -110,7 +110,7 @@ The Claude app writes the signed-in account's plan usage to `~/Library/Applicati
 
 By default it never calls Anthropic's servers and never reads tokens; it only shows what Claude already recorded.
 
-**Exact mode (opt-in):** in Settings you can turn on *Exact mode*. Every 5 minutes it uses the sign-in Claude Code already stores to ask Anthropic for the signed-in account's usage — the same endpoint Claude Code's own `/usage` uses — so percentages and reset times are official. The credential is used for that request only (never stored, refreshed or sent elsewhere), it backs off on errors, and it covers the account the Claude Code **CLI** is signed in to. The endpoint is undocumented and may change.
+**Exact mode (opt-in):** in Settings you can turn on *Exact mode*. After you've used Claude (at most every 10 minutes, 60 times a day) it uses the sign-in Claude Code already stores to ask Anthropic for the signed-in account's usage — the same endpoint Claude Code's own `/usage` uses — so percentages and reset times are official. The credential is used for that request only (never stored, refreshed or sent elsewhere). It locks to your current network: nothing is sent offline, and it turns itself off if the egress IP, gateway, proxy or VPN changes, or after repeated errors; and it covers the account the Claude Code **CLI** is signed in to. The endpoint is undocumented and may change.
 
 ## Build from source
 

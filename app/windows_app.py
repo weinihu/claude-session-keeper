@@ -410,14 +410,16 @@ class App:
 
     @staticmethod
     def title_of(a):
-        return a.get("name") if a.get("named") else (a.get("email") or a.get("name") or "?")
+        """Email first; the note only stands in while the email is unknown."""
+        return a.get("email") or a.get("name") or "?"
 
     @staticmethod
     def sub_of(a):
+        if not a.get("email"):
+            return tr("邮箱待识别，登录一次即可", "Email unknown — sign in once")
         if a.get("named"):
-            return a.get("email") or tr("邮箱待识别，登录一次即可", "Email unknown — sign in once")
-        return tr("点名字可以起个名字", "Click the name to rename") if a.get("email") else \
-            tr("邮箱待识别，登录一次即可", "Email unknown — sign in once")
+            return tr("备注：", "Note: ") + a.get("name") + tr("（点 ✎ 修改或删除）", " (click ✎ to edit or delete)")
+        return tr("点 ✎ 添加备注", "Click ✎ to add a note")
 
     def page_overview(self, p):
         self.header(p, tr("概览", "Overview"),
@@ -475,7 +477,7 @@ class App:
             label(tr_, self.title_of(a), 10, "bold").pack(side="left")
             if a.get("current"):
                 tag(tr_, tr("当前", "Current")).pack(side="left", padx=6)
-            label(t, a.get("email") if a.get("named") and a.get("email") else self.sub_of(a), 9, color=MUTED).pack(anchor="w")
+            label(t, self.sub_of(a), 9, color=BRAND if a.get("named") else MUTED).pack(anchor="w")
             sw = tk.Frame(r, bg=CARD, width=64, height=34)
             sw.pack(side="right", padx=(12, 0))
             sw.pack_propagate(False)            # same width with or without the button, so bars line up
@@ -721,18 +723,30 @@ class App:
         t3 = tk.Frame(r3, bg=CARD)
         t3.pack(side="left", fill="x", expand=True)
         label(t3, tr("精确模式（读取官方额度）", "Exact mode (official usage)"), 10, "bold").pack(anchor="w")
-        label(t3, tr("开启后每 5 分钟用 Claude Code 自己保存的登录凭证，向 Anthropic 查询一次当前登录账号的额度（与 /usage 同一接口）。凭证只用于这次查询，不保存、不刷新、不发往别处。只覆盖命令行版 Claude Code 登录的那个号。",
+        label(t3, tr("开启后，在你用过 Claude 之后（最多 10 分钟一次、每天最多 60 次），用 Claude Code 自己保存的登录凭证向 Anthropic 查询一次当前账号的额度（与 /usage 同一接口）。凭证只用于这次查询，不保存、不刷新。开启时锁定当前网络，断网不查询，出口 IP 或网络一变就自动关闭。只覆盖命令行版 Claude Code 登录的那个号。",
                      "Every 5 minutes, uses Claude Code's stored sign-in to ask Anthropic for the signed-in account's usage (same endpoint as /usage). The credential is used for that request only. Covers the Claude Code CLI account."),
               9, color=MUTED, wraplength=520).pack(anchor="w")
         if ex.get("enabled"):
             msg = {"no_credentials": tr("没找到 Claude Code 的登录：运行 claude 登录一次。", "No Claude Code sign-in found."),
                    "token_expired": tr("登录已过期：打开一次 Claude Code 即可续期。", "Sign-in expired: open Claude Code once."),
                    "http_429": tr("查询太频繁，已暂停 30 分钟。", "Too many requests — paused 30 min."),
-                   "network": tr("网络连接失败，稍后自动重试。", "Network error — will retry.")}.get(ex.get("error") or "", "")
+                   "network": tr("网络连接失败，稍后自动重试。", "Network error — will retry."),
+                   "offline": tr("现在没联网，暂不查询（不发送任何请求）。", "Offline — nothing is sent."),
+                   "daily_cap": tr("今天已查询 60 次，明天继续。", "60 reads today — continuing tomorrow.")}.get(ex.get("error") or "", "")
             ok_txt = tr("已连接：", "Connected: ") + str(ex.get("email") or "?") + (
                 (tr(" · 上次更新 ", " · updated ") + short_time(ex.get("lastOk"))) if ex.get("lastOk") else "")
             label(t3, ok_txt if ex.get("ok") else (msg or tr("读取失败：", "Read failed: ") + str(ex.get("error"))),
                   9, color="#3E9B52" if ex.get("ok") else "#C9772E").pack(anchor="w", pady=(4, 0))
+            label(t3, tr("网络已锁定：", "Network locked: ") + str(ex.get("lockedIp") or "—") +
+                  tr(f" · 今天查询 {ex.get('count') or 0} 次（上限 60）· 出口 IP/网关/代理/VPN 一变就自动关闭",
+                     f" · {ex.get('count') or 0} reads today (max 60) · turns off if the egress IP/gateway/proxy/VPN changes"),
+                  8, color=FAINT, wraplength=520).pack(anchor="w")
+        elif ex.get("autoOffAt") and ex.get("error"):
+            reason = tr("网络环境变了，为避免风控已自动关闭。", "Network changed — turned off to stay safe.") if ex.get("error") == "env_changed" \
+                else tr("连续出错，已自动关闭。", "Repeated errors — turned off.")
+            label(t3, tr("已在 ", "Turned off at ") + short_time(ex.get("autoOffAt")) + tr(" 自动关闭：", ": ") + reason +
+                  tr(" 确认网络稳定后可以重新开启。", " Turn it back on once your network is stable."),
+                  9, color="#C9772E", wraplength=520).pack(anchor="w", pady=(4, 0))
         on = bool(ex.get("enabled"))
         button(r3, tr("关闭", "Turn off") if on else tr("开启", "Turn on"),
                lambda: self.run_action(["live", "--enable", "off" if on else "on", "--json"] + ([] if on else ["--force"])),
@@ -854,11 +868,13 @@ class App:
         self.render()
 
     def rename(self, a):
-        name = simpledialog.askstring(tr("给这个账号起个名字", "Name this account"),
-                                      tr("例如：工作号（只保存在本机）", "e.g. Work (stored on this computer only)"),
+        name = simpledialog.askstring(tr("账号备注", "Account note"),
+                                      (a.get("email") or "") + "\n\n" +
+                                      tr("输入备注，例如：工作号。\n清空后点确定 = 删除备注。只保存在本机。",
+                                         "Type a note, e.g. Work.\nClear it and press OK to delete it. Stored on this computer only."),
                                       initialvalue=a.get("name") if a.get("named") else "", parent=self.root)
         if name is not None:
-            self.run_action(["usage", "--rename", a["org"], name])
+            self.run_action(["usage", "--rename", a["org"], name.strip()])
 
     def choose_data_folder(self):
         folder = filedialog.askdirectory(title=tr("选择 Claude 数据文件夹", "Choose Claude data folder"))

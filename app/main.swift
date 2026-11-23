@@ -57,15 +57,16 @@ struct Usage: Decodable {
         let fiveHourReset: Reset?
         let weeklyReset: Reset?
         var id: String { org }
-        /// Main line: the name you gave it, otherwise the full email.
-        var title: String { named ? name : (email ?? name) }
-        /// Second line: the email under a custom name, or a hint.
+        /// Main line: always the email (falls back to the name only while the email is unknown).
+        var title: String { email ?? name }
+        /// Your note for this account, if any.
+        var note: String? { named ? name : nil }
+        /// Hint shown when there's no note.
         var subtitle: String {
-            if named { return email ?? L("邮箱待识别，登录一次即可", "Email unknown — sign in once") }
-            return email == nil ? L("邮箱待识别，登录一次即可", "Email unknown — sign in once")
-                                : L("点 ✎ 可以起个名字", "Tap ✎ to add a name")
+            email == nil ? L("邮箱待识别，登录一次即可", "Email unknown — sign in once")
+                         : L("点「备注」可以加个名字", "Click Note to add a name")
         }
-        var avatarText: String { email == nil && !named ? "?" : title }
+        var avatarText: String { email ?? (named ? name : "?") }
     }
     let accounts: [Account]
     let sourceFound: Bool
@@ -74,8 +75,12 @@ struct Usage: Decodable {
         let enabled: Bool
         let ok: Bool?
         let error: String?
+        let detail: String?
         let email: String?
         let lastOk: Double?
+        let autoOffAt: Double?
+        let lockedIp: String?
+        let count: Int?
     }
     let exact: Exact?
 }
@@ -230,8 +235,15 @@ final class Model: ObservableObject {
 
     func saveRename() async {
         guard let org = renameOrg else { return }
-        _ = await python(["usage", "--rename", org, renameText])
+        let text = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = await python(["usage", "--rename", org, text])     // empty = delete the note
+        showRename = false
         await loadUsage()
+    }
+
+    func deleteNote() async {
+        renameText = ""
+        await saveRename()
     }
 
     // MARK: keep rules (stored in the vault's config.json)
@@ -694,13 +706,45 @@ struct ContentView: View {
             Text(L("邮箱已复制到剪贴板。\n\n1. 在 Claude 左下角点头像 → 退出登录\n2. 用这个邮箱登录（粘贴即可）\n3. 打开一次 Code 标签页\n\n本工具会在一分钟内自动弹窗，帮你把对话恢复到这个号。\n\n为了你的账号安全，本工具不保存、不调换任何登录凭证。",
                    "The email is on your clipboard.\n\n1. In Claude, click your avatar (bottom left) → Log out\n2. Sign in with this email (just paste it)\n3. Open the Code tab once\n\nWithin a minute this app will offer to restore your chats to that account.\n\nFor your safety, this app never stores or swaps sign-in credentials."))
         }
-        .alert(L("给这个账号起个名字", "Name this account"), isPresented: $m.showRename) {
-            TextField(L("例如：工作号", "e.g. Work"), text: $m.renameText)
-            Button(L("保存", "Save")) { Task { await m.saveRename() } }
-            Button(L("取消", "Cancel"), role: .cancel) {}
-        } message: {
-            Text(L("方便你分清是哪个号。只保存在本机。", "So you can tell accounts apart. Stored on this Mac only."))
+        .sheet(isPresented: $m.showRename) { noteSheet }
+    }
+
+    var noteSheet: some View {
+        let target = m.usage?.accounts.first { $0.org == m.renameOrg }
+        return VStack(alignment: .leading, spacing: 14) {
+            Text(L("账号备注", "Account note")).font(.title3.bold())
+            Text(target?.email ?? "").font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+            TextField(L("例如：工作号（留空 = 删除备注）", "e.g. Work (leave empty to delete)"), text: $m.renameText)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { Task { await m.saveRename() } }
+            Text(L("只保存在本机。清空后保存，或点「删除备注」，就会删掉。", "Stored on this Mac only. Save it empty, or click Delete note, to remove it."))
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                if target?.named == true {
+                    Button(role: .destructive) { Task { await m.deleteNote() } } label: { Text(L("删除备注", "Delete note")) }
+                }
+                Spacer()
+                Button(L("取消", "Cancel")) { m.showRename = false }.keyboardShortcut(.cancelAction)
+                Button(L("保存", "Save")) { Task { await m.saveRename() } }
+                    .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+            }
         }
+        .padding(22)
+        .frame(width: 420)
+    }
+
+    func noteChip(_ a: Usage.Account) -> some View {
+        Button { m.startRename(a) } label: {
+            HStack(spacing: 4) {
+                Image(systemName: a.note == nil ? "plus" : "tag").font(.system(size: 9, weight: .semibold))
+                Text(a.note ?? L("备注", "Note")).font(.caption.weight(.medium)).lineLimit(1)
+            }
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(Capsule().fill(a.note == nil ? Color.secondary.opacity(0.10) : brand.opacity(0.12)))
+            .foregroundStyle(a.note == nil ? Color.secondary : brand)
+        }
+        .buttonStyle(.plain)
+        .help(a.note == nil ? L("添加备注", "Add a note") : L("修改或删除备注", "Edit or delete the note"))
     }
 
     // MARK: sidebar
@@ -822,10 +866,15 @@ struct ContentView: View {
                             HStack(spacing: 6) {
                                 Text(currentUsage?.title ?? (m.status?.currentAccount.map { String($0.prefix(8)) + "…" } ?? "—"))
                                     .font(.system(size: 18, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                                    .textSelection(.enabled)
                                 Tag(text: L("当前登录", "Signed in"))
                             }
-                            Text(currentUsage.map { $0.named ? ($0.email ?? $0.subtitle) : $0.subtitle } ?? L("登录后会自动记录邮箱", "Email is recorded after you sign in"))
-                                .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                            if let u = currentUsage {
+                                noteChip(u)
+                            } else {
+                                Text(L("登录后会自动记录邮箱", "Email is recorded after you sign in"))
+                                    .font(.callout).foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
                         if let u = currentUsage {
@@ -876,11 +925,15 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 HStack(spacing: 6) {
                                     Text(a.title).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                                    if let n = a.note {
+                                        Text(n).font(.caption2.weight(.medium)).foregroundStyle(brand)
+                                            .padding(.horizontal, 5).padding(.vertical, 1)
+                                            .background(Capsule().fill(brand.opacity(0.12)))
+                                    }
                                     if a.current { Tag(text: L("当前", "Current")) }
                                 }
-                                Text(a.named ? (a.email ?? a.subtitle)
-                                     : (a.email == nil ? a.subtitle
-                                        : (a.weeklyReset.map { L("每周 \($0.when) 重置", "weekly resets \($0.when)") } ?? L("每周重置时间未知", "weekly reset unknown"))))
+                                Text(a.email == nil ? a.subtitle
+                                     : (a.weeklyReset.map { L("每周 \($0.when) 重置", "weekly resets \($0.when)") } ?? L("每周重置时间未知", "weekly reset unknown")))
                                     .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                             }
                             Spacer()
@@ -1025,14 +1078,9 @@ struct ContentView: View {
                         HStack(spacing: 6) {
                             Text(a.title).font(.system(size: 14, weight: .semibold)).lineLimit(1).truncationMode(.middle)
                                 .textSelection(.enabled)
-                            Button { m.startRename(a) } label: {
-                                Image(systemName: "pencil").font(.caption).foregroundStyle(.tertiary)
-                            }
-                            .buttonStyle(.plain).help(L("起个名字", "Rename"))
                             if a.current { Tag(text: L("当前登录", "Signed in")) }
                         }
-                        Text(a.subtitle).font(.caption).foregroundStyle(a.named && a.email != nil ? .secondary : .tertiary)
-                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                        noteChip(a)
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 6) {
@@ -1203,9 +1251,18 @@ struct ContentView: View {
         return Card {
             VStack(alignment: .leading, spacing: 10) {
                 switchRow(L("精确模式（读取官方额度）", "Exact mode (official usage)"),
-                          L("开启后每 5 分钟用 Claude Code 自己保存的登录凭证，向 Anthropic 查询一次当前登录账号的额度（与 Claude Code 的 /usage 命令是同一个接口），百分比和重置时间都是官方数字。凭证只用于这次查询，不保存、不刷新、不发往别处。第一次开启时 macOS 会询问是否允许读取钥匙串。",
-                            "Every 5 minutes, uses the sign-in Claude Code already stores to ask Anthropic for the signed-in account's usage (the same endpoint as Claude Code's /usage) — official percentages and reset times. The credential is used for that request only: never stored, refreshed or sent elsewhere. The first time, macOS asks to allow Keychain access."),
+                          L("开启后，在你用过 Claude 之后（最多 10 分钟一次、每天最多 60 次），用 Claude Code 自己保存的登录凭证向 Anthropic 查询一次当前账号的额度（与 /usage 命令同一个接口），百分比和重置时间都是官方数字。凭证只用于这次查询，不保存、不刷新、不发往别处。开启时会锁定当前网络，断网不查询，出口 IP 或网络一变就自动关闭。第一次开启时 macOS 会询问是否允许读取钥匙串。",
+                            "After you've used Claude (at most every 10 min, 60 a day), uses the sign-in Claude Code already stores to ask Anthropic for the signed-in account's usage (same endpoint as /usage) — official numbers. The credential is used for that request only. Locks to your current network: nothing is sent offline, and it turns itself off if the egress IP or network changes. The first time, macOS asks to allow Keychain access."),
                           Binding(get: { on }, set: { v in Task { await m.setExactMode(v) } }))
+                if !on, let off = ex?.autoOffAt, ex?.error != nil {
+                    Divider()
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.caption)
+                        Text(L("已在 \(shortTime(off)) 自动关闭：", "Turned off at \(shortTime(off)): ") + exactStatusText(ex)
+                             + L(" 确认网络稳定后可以重新打开。", " Turn it back on once your network is stable."))
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 if on {
                     Divider()
                     HStack(spacing: 8) {
@@ -1213,6 +1270,15 @@ struct ContentView: View {
                         Text(exactStatusText(ex)).font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    HStack(spacing: 6) {
+                        Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                        Text(L("网络已锁定：", "Network locked: ") + (ex?.lockedIp ?? "—")
+                             + L(" · 今天查询 \(ex?.count ?? 0) 次（上限 60）", " · \(ex?.count ?? 0) reads today (max 60)"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(L("只在你用过 Claude 之后才查询，最多 10 分钟一次；断网不查询；出口 IP、网关、代理或 VPN 一变就自动关闭。",
+                           "Reads only after you've used Claude, at most every 10 min; never offline; turns itself off if the egress IP, gateway, proxy or VPN changes."))
+                        .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
                     Text(L("只覆盖命令行版 Claude Code 登录的那个号；想让它和桌面版一致，在终端里运行 claude 并用 /login 登录同一个号。",
                            "Covers only the account the Claude Code CLI is signed in to; to match the desktop app, run claude in Terminal and /login with the same account."))
                         .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
@@ -1232,7 +1298,13 @@ struct ContentView: View {
         case "token_expired": return L("登录凭证已过期：打开一次 Claude Code 它会自动续期，之后这里会恢复。", "Sign-in expired: open Claude Code once and it renews itself.")
         case "http_401", "http_403": return L("官方拒绝了这次查询（登录已失效），在 Claude Code 里重新登录即可。", "Anthropic refused the request (sign-in no longer valid) — sign in again in Claude Code.")
         case "http_429": return L("查询太频繁，已自动暂停 30 分钟。", "Too many requests — paused for 30 minutes.")
-        case "network": return L("网络连接失败，稍后会自动重试。", "Network error — will retry.")
+        case "network": return ex.detail == "repeated" ? L("连续几次网络失败。", "Several network failures in a row.")
+                                                       : L("网络连接失败，稍后会自动重试。", "Network error — will retry.")
+        case "offline": return L("现在没联网，暂不查询（不会发送任何请求）。", "Offline — not reading (nothing is sent).")
+        case "daily_cap": return L("今天已查询 60 次，明天再继续。", "60 reads today — continuing tomorrow.")
+        case "env_changed":
+            let what = (ex.detail ?? "").split(separator: ",").map { $0 == "ip" ? L("出口 IP", "egress IP") : L("本机网络（网关/代理/VPN）", "local network (gateway/proxy/VPN)") }
+            return L("网络环境变了（", "Network changed (") + what.joined(separator: L("、", ", ")) + L("），为避免风控已停止查询。", ") — stopped to stay safe.")
         case "": return L("等待第一次读取…", "Waiting for the first read…")
         default: return L("读取失败：", "Read failed: ") + (ex.error ?? "")
         }
