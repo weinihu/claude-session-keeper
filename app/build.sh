@@ -52,7 +52,16 @@ echo "Zip:   dist/SessionKeeper-macOS.zip"
 
 if [[ "$1" == "--install" ]]; then
   DEST="/Applications"; [[ -w "$DEST" ]] || DEST="$HOME/Applications"; mkdir -p "$DEST"
+  # quit the running copy so the new version is what you see
+  WAS_RUNNING=0
+  if pgrep -x SessionKeeper >/dev/null; then
+    WAS_RUNNING=1
+    osascript -e 'tell application id "local.claude-session-vault.app" to quit' >/dev/null 2>&1 || pkill -x SessionKeeper
+    for i in {1..20}; do pgrep -x SessionKeeper >/dev/null || break; sleep 0.3; done
+  fi
   rm -rf "$DEST/$NAME.app" "$DEST/Claude 换号恢复.app"
   cp -R "$APP" "$DEST/"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DEST/$NAME.app" >/dev/null 2>&1 || true
   echo "Installed: $DEST/$NAME.app"
+  [[ $WAS_RUNNING == 1 ]] && open "$DEST/$NAME.app" && echo "Relaunched the new version"
 fi

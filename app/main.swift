@@ -94,6 +94,10 @@ final class Model: ObservableObject {
     @Published var renameOrg: String?
     @Published var renameText = ""
     @Published var showRename = false
+    @Published var refreshing = false
+    @Published var refreshedAt: Date?
+    @Published var switchTarget: Usage.Account?
+    @Published var showSwitchGuide = false
     @Published var page: Page? = Page(rawValue: env["CSV_PAGE"] ?? "") ?? .overview
 
     // MARK: install / python
@@ -159,6 +163,34 @@ final class Model: ObservableObject {
     func loadUsage() async {
         let (code, out) = await python(["usage", "--json"])
         if code == 0, let u = try? JSONDecoder().decode(Usage.self, from: Data(out.utf8)) { usage = u }
+        refreshedAt = Date()
+    }
+
+    /// Refresh button: status + usage, with visible feedback.
+    func manualRefresh() async {
+        guard !refreshing else { return }
+        refreshing = true
+        await refresh()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        refreshing = false
+    }
+
+    /// Re-read Claude's records every 30 s while the app is open.
+    func autoRefreshLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            if !busy && !refreshing { await refresh() }
+        }
+    }
+
+    /// Guided, credential-free account switch: copy the email, bring Claude forward, show the steps.
+    func switchTo(_ a: Usage.Account) {
+        if let e = a.email {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(e, forType: .string)
+        }
+        switchTarget = a
+        showSwitchGuide = true
     }
 
     func startRename(_ a: Usage.Account) {
@@ -288,13 +320,14 @@ final class Model: ObservableObject {
 // MARK: - UI
 
 enum Page: String, CaseIterable, Identifiable {
-    case overview, usage, chats, settings
+    case overview, usage, chats, guide, settings
     var id: String { rawValue }
     var title: String {
         switch self {
         case .overview: return L("概览", "Overview")
         case .usage: return L("额度", "Usage")
         case .chats: return L("对话", "Chats")
+        case .guide: return L("使用指南", "Guide")
         case .settings: return L("设置", "Settings")
         }
     }
@@ -303,6 +336,7 @@ enum Page: String, CaseIterable, Identifiable {
         case .overview: return "square.grid.2x2"
         case .usage: return "gauge.with.dots.needle.50percent"
         case .chats: return "bubble.left.and.bubble.right"
+        case .guide: return "book"
         case .settings: return "gearshape"
         }
     }
@@ -452,11 +486,13 @@ struct ContentView: View {
     @StateObject var m = Model()
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
+            // fixed-width sidebar: always visible, can't be dragged away
             sidebar
-                .navigationSplitViewColumnWidth(min: 190, ideal: 200, max: 240)
-                .toolbar(removing: .sidebarToggle)
-        } detail: {
+                .frame(width: 220)
+                .frame(maxHeight: .infinity)
+                .background(Color(nsColor: .underPageBackgroundColor).opacity(0.55))
+            Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if let e = m.error { errorBanner(e) }
@@ -464,19 +500,20 @@ struct ContentView: View {
                     case .overview: overviewPage
                     case .usage: usagePage
                     case .chats: chatsPage
+                    case .guide: guidePage
                     case .settings: settingsPage
                     }
                 }
-                .padding(24)
-                .frame(maxWidth: 760, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 32).padding(.top, 40).padding(.bottom, 28)
+                .frame(maxWidth: 820, alignment: .leading)
+                .frame(maxWidth: .infinity)          // centered column
             }
             .background(Color(nsColor: .windowBackgroundColor))
-            .navigationTitle("")
         }
-        .frame(minWidth: 900, minHeight: 600)
+        .ignoresSafeArea(.container, edges: .top)
+        .frame(minWidth: 940, minHeight: 620)
         .tint(brand)
-        .task { await m.installIfNeeded(); await m.refresh() }
+        .task { await m.installIfNeeded(); await m.refresh(); await m.autoRefreshLoop() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await m.refresh() }
         }
@@ -508,6 +545,14 @@ struct ContentView: View {
             Text(L("每个项目只保留最近 \(m.rules.days) 天内最新的 \(m.rules.perProject) 个对话。\n\n将从所有账号的列表里移除：\n\(m.pruneSummary)\n\n会先退出 Claude，完成后自动重新打开。可以点「撤销上次操作」找回。",
                    "Keeps the newest \(m.rules.perProject) chats from the last \(m.rules.days) days in each project.\n\nWill be removed from every account's list:\n\(m.pruneSummary)\n\nClaude quits and reopens. You can Undo afterwards."))
         }
+        .alert(L("切换到 \(m.switchTarget?.email ?? m.switchTarget?.title ?? "")", "Switch to \(m.switchTarget?.email ?? m.switchTarget?.title ?? "")"),
+               isPresented: $m.showSwitchGuide) {
+            Button(L("打开 Claude", "Open Claude")) { m.openClaude() }
+            Button(L("好的", "OK"), role: .cancel) {}
+        } message: {
+            Text(L("邮箱已复制到剪贴板。\n\n1. 在 Claude 左下角点头像 → 退出登录\n2. 用这个邮箱登录（粘贴即可）\n3. 打开一次 Code 标签页\n\n本工具会在一分钟内自动弹窗，帮你把对话恢复到这个号。\n\n为了你的账号安全，本工具不保存、不调换任何登录凭证。",
+                   "The email is on your clipboard.\n\n1. In Claude, click your avatar (bottom left) → Log out\n2. Sign in with this email (just paste it)\n3. Open the Code tab once\n\nWithin a minute this app will offer to restore your chats to that account.\n\nFor your safety, this app never stores or swaps sign-in credentials."))
+        }
         .alert(L("给这个账号起个名字", "Name this account"), isPresented: $m.showRename) {
             TextField(L("例如：工作号", "e.g. Work"), text: $m.renameText)
             Button(L("保存", "Save")) { Task { await m.saveRename() } }
@@ -528,7 +573,7 @@ struct ContentView: View {
                     Text(L("对话不丢 · 额度清楚", "for Claude")).font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 10)
+            .padding(.horizontal, 14).padding(.top, 44).padding(.bottom, 14)
 
             VStack(spacing: 2) {
                 ForEach(Page.allCases) { p in sidebarItem(p) }
@@ -591,7 +636,9 @@ struct ContentView: View {
     var overviewPage: some View {
         VStack(alignment: .leading, spacing: 18) {
             PageHeader(title: L("概览", "Overview"),
-                       subtitle: L("换号不丢对话，每个号的额度一眼看清", "Switch accounts without losing chats — see every account's usage at a glance"))
+                       subtitle: L("换号不丢对话，每个号的额度一眼看清", "Switch accounts without losing chats — see every account's usage at a glance")) {
+                refreshControl
+            }
 
             // current account
             Card(padding: 18) {
@@ -666,6 +713,14 @@ struct ContentView: View {
                             Spacer()
                             compactBar(L("5h", "5h"), a.fiveHour, a.fiveHourEstimated)
                             compactBar(L("周", "Wk"), a.weekly, a.weeklyEstimated)
+                            Group {
+                                if a.current {
+                                    Color.clear
+                                } else {
+                                    Button(L("切换", "Switch")) { m.switchTo(a) }.controlSize(.small)
+                                }
+                            }
+                            .frame(width: 52)
                         }
                         .padding(.horizontal, 14).padding(.vertical, 10)
                     }
@@ -743,9 +798,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             PageHeader(title: L("额度", "Usage"),
                        subtitle: L("每个账号的 5 小时额度和每周额度，以及下一次重置时间", "5-hour and weekly limits for every account, and when each resets")) {
-                Button { Task { await m.loadUsage() } } label: {
-                    Label(L("刷新", "Refresh"), systemImage: "arrow.clockwise")
-                }
+                refreshControl
             }
             if let u = m.usage, !u.accounts.isEmpty {
                 VStack(spacing: 12) {
@@ -786,8 +839,16 @@ struct ContentView: View {
                             .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                     }
                     Spacer()
-                    Text(a.updatedAt > 0 ? L("用量更新于 ", "usage as of ") + shortTime(a.updatedAt) : L("暂无用量记录", "no usage yet"))
-                        .font(.caption2).foregroundStyle(.tertiary)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        if !a.current {
+                            Button { m.switchTo(a) } label: {
+                                Label(L("切换到这个号", "Switch to this"), systemImage: "arrow.left.arrow.right")
+                            }
+                            .controlSize(.small)
+                        }
+                        Text(a.updatedAt > 0 ? L("Claude 记录于 ", "recorded ") + shortTime(a.updatedAt) : L("暂无用量记录", "no usage yet"))
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
                 }
                 HStack(alignment: .top, spacing: 14) {
                     limitBlock(L("5 小时额度", "5-hour limit"), a.fiveHour, a.fiveHourEstimated, a.fiveHourReset,
@@ -923,6 +984,71 @@ struct ContentView: View {
         }
     }
 
+    /// Refresh with feedback: spinner while working, then when Claude last recorded usage.
+    var refreshControl: some View {
+        HStack(spacing: 10) {
+            if let t = m.refreshedAt, !m.refreshing {
+                Text(L("已刷新 ", "Refreshed ") + t.formatted(date: .omitted, time: .standard))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Button { Task { await m.manualRefresh() } } label: {
+                HStack(spacing: 5) {
+                    if m.refreshing { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") }
+                    Text(L("刷新", "Refresh"))
+                }
+            }
+            .disabled(m.refreshing)
+        }
+    }
+
+    // MARK: guide
+
+    var guidePage: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            PageHeader(title: L("使用指南", "Guide"), subtitle: L("三分钟看懂怎么用", "Everything in three minutes"))
+            guideCard("1", L("平时：什么都不用做", "Day to day: nothing to do"), [
+                L("后台每分钟自动备份一次对话列表和额度记录，只在有变化时才写入。", "A background job backs up chat lists and usage every minute, writing only when something changed."),
+                L("「额度」页每 30 秒自动刷新；想马上看最新的，点右上角「刷新」。", "The Usage page refreshes every 30 s; press Refresh for the latest."),
+            ])
+            guideCard("2", L("换号：三步", "Switching accounts: three steps"), [
+                L("在「额度」或「概览」里，对要换的号点「切换」，邮箱会自动复制。", "In Usage or Overview, click Switch on the account you want — its email is copied for you."),
+                L("在 Claude 左下角点头像 → 退出登录，再用这个邮箱登录，打开一次 Code 标签页。", "In Claude: avatar (bottom left) → Log out, sign in with that email, open the Code tab once."),
+                L("一分钟内会弹出「检测到你换了账号」，点「现在恢复」，之前的对话就回来了。", "Within a minute you'll be asked to restore — click Restore now and your chats are back."),
+            ])
+            guideCard("3", L("额度怎么看", "Reading the usage"), [
+                L("百分比来自 Claude App 自己的记录。Claude 通常在你使用或打开它的「用量」面板时更新记录，所以没登录的号显示的是上次登录时的情况。",
+                  "Percentages come from the Claude app's own record, which Claude updates while you use it or open its Usage panel — accounts you aren't signed in to show their last known state."),
+                L("「精确」的重置时间是 Claude 自己报出来的（碰到限额时）；每周额度每周固定在同一时间重置，见过一次以后每周都准。「估计」的是推算的。",
+                  "\"Exact\" reset times were reported by Claude when a limit was hit; the weekly reset repeats at the same time every week. \"Est.\" ones are inferred."),
+            ])
+            guideCard("4", L("规则和安全", "Rules and safety"), [
+                L("只读写本机文件，不联网，不读取、不保存、不调换任何登录凭证或 token。换号永远由你自己在 Claude 里登录完成。",
+                  "Local files only: no network, and it never reads, stores or swaps sign-in credentials or tokens. You always sign in yourself in Claude."),
+                L("不提供「快到限额就自动换号」这类功能：用多个账号绕开单个账号的用量限制，可能违反 Anthropic 的使用条款，请以条款为准。",
+                  "No \"auto-switch before the limit\": using several accounts to get around one account's usage limits may break Anthropic's terms — check them for your case."),
+                L("每次恢复和清理之前都会拍快照，在「对话」页点「撤销上次操作」就能回到原样。", "Every restore and cleanup takes a snapshot first; Undo on the Chats page puts things back."),
+            ])
+        }
+    }
+
+    func guideCard(_ n: String, _ title: String, _ items: [String]) -> some View {
+        Card(padding: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                Text(n).font(.system(size: 15, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                    .frame(width: 28, height: 28).background(Circle().fill(brand))
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(title).font(.headline)
+                    ForEach(items, id: \.self) { t in
+                        HStack(alignment: .top, spacing: 8) {
+                            Circle().fill(Color.secondary.opacity(0.5)).frame(width: 4, height: 4).padding(.top, 7)
+                            Text(t).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: settings
 
     var settingsPage: some View {
@@ -982,6 +1108,7 @@ struct KeeperApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     var body: some Scene {
         WindowGroup(L("Claude 换号助手", "Session Keeper for Claude")) { ContentView() }
+            .windowStyle(.hiddenTitleBar)
             .defaultSize(width: 940, height: 660)
     }
 }

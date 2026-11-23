@@ -226,13 +226,18 @@ class Scrollable(tk.Frame):
         self.canvas.pack(side="left", fill="both", expand=True)
         self.sb.pack(side="right", fill="y")
         self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.win, width=e.width))
+        self.canvas.bind("<Configure>", self._center)
         self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"))
+
+    def _center(self, e):
+        w = min(e.width, 880)
+        self.canvas.itemconfigure(self.win, width=w)
+        self.canvas.coords(self.win, max(0, (e.width - w) // 2), 0)
 
 
 # ------------------------------------------------------------------ main window
 PAGES = [("overview", "概览", "Overview", "▦"), ("usage", "额度", "Usage", "◔"),
-         ("chats", "对话", "Chats", "☰"), ("settings", "设置", "Settings", "⚙")]
+         ("chats", "对话", "Chats", "☰"), ("guide", "使用指南", "Guide", "?"), ("settings", "设置", "Settings", "⚙")]
 
 
 class App:
@@ -241,6 +246,8 @@ class App:
         self.status, self.usage, self.rules = {}, {}, {}
         self.page = os.environ.get("CSV_PAGE") or "overview"
         self.busy = False
+        self.refreshed_at = None
+        self.ticks = 0
         self.log_lines = []
         self.inbox = queue.Queue()          # results from worker threads, applied on the Tk thread
         root.title(tr("Claude 换号助手", "Session Keeper for Claude"))
@@ -292,6 +299,7 @@ class App:
 
     def _apply(self, st, us, rules, rerender):
         self.status, self.usage, self.rules = st, us, rules
+        self.refreshed_at = time.strftime("%H:%M:%S")
         self.build_sidebar()
         if rerender:
             self.render()
@@ -299,6 +307,9 @@ class App:
 
     def poll(self):
         self.check_pending_switch()
+        self.ticks += 1
+        if self.ticks % 8 == 0 and not self.busy:      # every ~30 s
+            self.refresh()
         self.root.after(4000, self.poll)
 
     def run_action(self, args, after=None):
@@ -383,6 +394,8 @@ class App:
         label(t, subtitle, 10, color=MUTED, bg=BG).pack(anchor="w")
         if action:
             button(h, action[0], action[1], bg=BG).pack(side="right")
+            if self.refreshed_at:
+                label(h, tr("已刷新 ", "Refreshed ") + self.refreshed_at, 9, color=MUTED, bg=BG).pack(side="right", padx=10)
 
     def data_missing_banner(self, parent):
         b = tk.Frame(parent, bg="#FDF0E1")
@@ -408,7 +421,8 @@ class App:
 
     def page_overview(self, p):
         self.header(p, tr("概览", "Overview"),
-                    tr("换号不丢对话，每个号的额度一眼看清", "Switch accounts without losing chats — see every account's usage"))
+                    tr("换号不丢对话，每个号的额度一眼看清", "Switch accounts without losing chats — see every account's usage"),
+                    (tr("⟳ 刷新", "⟳ Refresh"), self.refresh))
         cur = next((a for a in self.accounts() if a.get("current")), None)
         c = card(p)
         c.pack(fill="x")
@@ -462,6 +476,10 @@ class App:
             if a.get("current"):
                 tag(tr_, tr("当前", "Current")).pack(side="left", padx=6)
             label(t, a.get("email") if a.get("named") and a.get("email") else self.sub_of(a), 9, color=MUTED).pack(anchor="w")
+            sw = tk.Frame(r, bg=CARD, width=64)
+            sw.pack(side="right", padx=(12, 0))
+            if not a.get("current"):
+                button(sw, tr("切换", "Switch"), lambda acc=a: self.switch_to(acc)).pack()
             for lab, v, est in ((tr("周", "Wk"), a.get("weekly"), a.get("weeklyEstimated")),
                                 ("5h", a.get("fiveHour"), a.get("fiveHourEstimated"))):
                 f = tk.Frame(r, bg=CARD)
@@ -517,8 +535,12 @@ class App:
             if cur:
                 tag(row, tr("当前登录", "Signed in")).pack(side="left", padx=8)
             label(t, self.sub_of(a), 9, color=MUTED if a.get("named") else FAINT).pack(anchor="w")
-            label(top, (tr("用量更新于 ", "usage as of ") + short_time(a.get("updatedAt"))) if a.get("updatedAt")
-                  else tr("暂无用量记录", "no usage yet"), 8, color=FAINT).pack(side="right", anchor="n")
+            side = tk.Frame(top, bg=CARD)
+            side.pack(side="right", anchor="n")
+            if not cur:
+                button(side, tr("⇄ 切换到这个号", "⇄ Switch to this"), lambda acc=a: self.switch_to(acc)).pack(anchor="e")
+            label(side, (tr("Claude 记录于 ", "recorded ") + short_time(a.get("updatedAt"))) if a.get("updatedAt")
+                  else tr("暂无用量记录", "no usage yet"), 8, color=FAINT).pack(anchor="e", pady=(4, 0))
 
             blocks = tk.Frame(c, bg=CARD)
             blocks.pack(fill="x", padx=16, pady=(0, 14))
@@ -612,6 +634,49 @@ class App:
             tk.Spinbox(sp, from_=1, to=20, width=4, textvariable=self.keep_per, command=self.save_rules,
                        font=font(10)).pack(side="left", padx=6)
             label(sp, tr("个对话", "chats per project"), 10).pack(side="left")
+
+    def page_guide(self, p):
+        self.header(p, tr("使用指南", "Guide"), tr("三分钟看懂怎么用", "Everything in three minutes"))
+        sections = [
+            (tr("平时：什么都不用做", "Day to day: nothing to do"), [
+                tr("后台每分钟自动备份一次对话列表和额度记录，只在有变化时才写入。", "A background job backs up chat lists and usage every minute."),
+                tr("页面每 30 秒自动刷新；想马上看最新的，点右上角「刷新」。", "Pages refresh every 30 s; press Refresh for the latest.")]),
+            (tr("换号：三步", "Switching accounts: three steps"), [
+                tr("在「额度」或「概览」里，对要换的号点「切换」，邮箱会自动复制。", "Click Switch on the account you want — its email is copied."),
+                tr("在 Claude 左下角点头像 → 退出登录，再用这个邮箱登录，打开一次 Code 标签页。", "In Claude: avatar → Log out, sign in with that email, open the Code tab once."),
+                tr("一分钟内会弹出「检测到你换了账号」，点「现在恢复」，之前的对话就回来了。", "Within a minute you'll be asked to restore your chats.")]),
+            (tr("额度怎么看", "Reading the usage"), [
+                tr("百分比来自 Claude 自己的记录，「Claude 记录于」就是数据的时间；没登录的号显示上次登录时的情况。",
+                   "Percentages come from Claude's own record — \"recorded\" shows how fresh it is."),
+                tr("「精确」的重置时间是 Claude 自己报出来的；每周额度每周固定时间重置。「估计」的是推算的。",
+                   "\"Exact\" reset times were reported by Claude; weekly resets repeat every week. \"Est.\" ones are inferred.")]),
+            (tr("规则和安全", "Rules and safety"), [
+                tr("只读写本机文件，不联网，不读取、不保存、不调换任何登录凭证或 token。换号由你自己在 Claude 里登录完成。",
+                   "Local files only: never reads, stores or swaps credentials or tokens. You always sign in yourself."),
+                tr("不提供「快到限额就自动换号」：用多个账号绕开单个账号的用量限制，可能违反 Anthropic 的使用条款。",
+                   "No auto-switch before the limit: using several accounts to get around usage limits may break Anthropic's terms."),
+                tr("每次恢复和清理之前都会拍快照，可以一键撤销。", "Every restore and cleanup takes a snapshot first; Undo puts things back.")]),
+        ]
+        for i, (title, items) in enumerate(sections, 1):
+            c = card(p)
+            c.pack(fill="x", pady=(0, 12))
+            r = tk.Frame(c, bg=CARD)
+            r.pack(fill="x", padx=16, pady=14)
+            tk.Label(r, text=str(i), font=font(11, "bold"), fg="white", bg=BRAND, width=2).pack(side="left", anchor="n")
+            t = tk.Frame(r, bg=CARD)
+            t.pack(side="left", padx=12, fill="x", expand=True)
+            label(t, title, 11, "bold").pack(anchor="w", pady=(0, 6))
+            for it in items:
+                label(t, "• " + it, 10, color=MUTED, wraplength=640).pack(anchor="w", pady=1)
+
+    def switch_to(self, a):
+        email = a.get("email") or ""
+        if email:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(email)
+        messagebox.showinfo(tr("切换到 ", "Switch to ") + (email or self.title_of(a)),
+                            tr("邮箱已复制到剪贴板。\n\n1. 在 Claude 左下角点头像 → 退出登录\n2. 用这个邮箱登录（粘贴即可）\n3. 打开一次 Code 标签页\n\n本工具会在一分钟内提醒你把对话恢复到这个号。\n\n为了你的账号安全，本工具不保存、不调换任何登录凭证。",
+                               "The email is on your clipboard.\n\n1. In Claude: avatar (bottom left) → Log out\n2. Sign in with this email (paste it)\n3. Open the Code tab once\n\nWithin a minute this app will offer to restore your chats.\n\nThis app never stores or swaps sign-in credentials."))
 
     def page_settings(self, p):
         self.header(p, tr("设置", "Settings"), tr("后台任务、数据位置和关于", "Background job, data folders and about"))
