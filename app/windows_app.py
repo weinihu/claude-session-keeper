@@ -713,6 +713,31 @@ class App:
             self.render()
         button(r2, tr("关闭", "Turn off") if ar else tr("开启", "Turn on"), toggle_ar, primary=not ar).pack(side="right")
 
+        ex = (self.usage or {}).get("exact") or {}
+        e = card(p)
+        e.pack(fill="x", pady=(12, 0))
+        r3 = tk.Frame(e, bg=CARD)
+        r3.pack(fill="x", padx=16, pady=12)
+        t3 = tk.Frame(r3, bg=CARD)
+        t3.pack(side="left", fill="x", expand=True)
+        label(t3, tr("精确模式（读取官方额度）", "Exact mode (official usage)"), 10, "bold").pack(anchor="w")
+        label(t3, tr("开启后每 5 分钟用 Claude Code 自己保存的登录凭证，向 Anthropic 查询一次当前登录账号的额度（与 /usage 同一接口）。凭证只用于这次查询，不保存、不刷新、不发往别处。只覆盖命令行版 Claude Code 登录的那个号。",
+                     "Every 5 minutes, uses Claude Code's stored sign-in to ask Anthropic for the signed-in account's usage (same endpoint as /usage). The credential is used for that request only. Covers the Claude Code CLI account."),
+              9, color=MUTED, wraplength=520).pack(anchor="w")
+        if ex.get("enabled"):
+            msg = {"no_credentials": tr("没找到 Claude Code 的登录：运行 claude 登录一次。", "No Claude Code sign-in found."),
+                   "token_expired": tr("登录已过期：打开一次 Claude Code 即可续期。", "Sign-in expired: open Claude Code once."),
+                   "http_429": tr("查询太频繁，已暂停 30 分钟。", "Too many requests — paused 30 min."),
+                   "network": tr("网络连接失败，稍后自动重试。", "Network error — will retry.")}.get(ex.get("error") or "", "")
+            ok_txt = tr("已连接：", "Connected: ") + str(ex.get("email") or "?") + (
+                (tr(" · 上次更新 ", " · updated ") + short_time(ex.get("lastOk"))) if ex.get("lastOk") else "")
+            label(t3, ok_txt if ex.get("ok") else (msg or tr("读取失败：", "Read failed: ") + str(ex.get("error"))),
+                  9, color="#3E9B52" if ex.get("ok") else "#C9772E").pack(anchor="w", pady=(4, 0))
+        on = bool(ex.get("enabled"))
+        button(r3, tr("关闭", "Turn off") if on else tr("开启", "Turn on"),
+               lambda: self.run_action(["live", "--enable", "off" if on else "on", "--json"] + ([] if on else ["--force"])),
+               primary=not on).pack(side="right")
+
         d = card(p)
         d.pack(fill="x", pady=(12, 0))
         for title, path, btn, cmd in (

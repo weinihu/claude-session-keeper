@@ -107,6 +107,7 @@ DEFAULT_CONFIG = {
     "skip_scheduled": True,     # 不同步定时任务自动产生的会话
     "rebuild_orphans": True,    # 为没有列表记录的旧 transcript 重建条目
     "snapshots_keep": 30,
+    "exact_mode": False,        # opt-in: read official usage with Claude Code's own token every 5 min
     # 保留规则：恢复时只带这些对话过去；"按规则清理"会删掉其余的
     "keep_rules": {
         "enabled": False,
@@ -164,7 +165,8 @@ def write_json(path, data):
 
 def tool_config():
     cfg = dict(DEFAULT_CONFIG)
-    cfg.update(load_json(TOOL_CONFIG, {}) or {})
+    path = TOOL_CONFIG if os.path.exists(TOOL_CONFIG) else os.path.join(VAULT, "config.json")
+    cfg.update(load_json(path, {}) or {})
     return cfg
 
 
@@ -948,6 +950,7 @@ def cmd_auto(args):
     cfg = tool_config()
     vault = cmd_backup(args, quiet=True)
     try:
+        fetch_live_usage()
         usage_data()
     except Exception:
         pass
@@ -1273,6 +1276,9 @@ def usage_data(now_ms=None):
                 break
         if org and (org not in official or r["t"] > official[org]["t"]):
             official[org] = r
+    for r in live_samples():
+        if r["org"] not in official or r["t"] > official[r["org"]]["t"]:
+            official[r["org"]] = r
 
     exact = {}                                    # org -> {"five_hour": [resetsAt...], "seven_day": [...]}
     for t, kind, reset in limit_events:
@@ -1384,7 +1390,10 @@ def usage_data(now_ms=None):
             "samples": len(xs),
         })
     out.sort(key=lambda a: (not a["current"], (a["email"] or "~" + a["name"]).lower()))
-    return {"now": now, "current": current, "accounts": out, "source": USAGE_SRC,
+    live = load_json(LIVE_STATUS, {}) or {}
+    exact = {"enabled": bool(tool_config().get("exact_mode")), "ok": live.get("ok"), "error": live.get("error"),
+             "email": live.get("email"), "org": live.get("org"), "lastOk": live.get("lastOk")}
+    return {"now": now, "current": current, "accounts": out, "source": USAGE_SRC, "exact": exact,
             "sourceFound": os.path.exists(USAGE_SRC)}
 
 
@@ -1455,6 +1464,148 @@ def cmd_usage(args):
               + (T("，下次重置：", ", next reset: ") + describe_reset(a["weeklyResetAt"], a["weeklyResetExact"])
                  if a["weeklyResetAt"] else ""))
         print(T(f"  数据时间：{fmt_ms(a['updatedAt'])}", f"  as of: {fmt_ms(a['updatedAt'])}"))
+
+
+# ---------------------------------------------------------------- exact mode (opt-in)
+# Reads the OAuth token Claude Code already stores for its signed-in account and asks Anthropic's
+# usage endpoint (the one Claude Code's own /usage uses) for exact numbers. Off by default.
+# The token is used for this one request only: never stored, printed, or refreshed by us.
+LIVE_FILE = os.path.join(VAULT, "live-usage.jsonl")
+LIVE_STATUS = os.path.join(VAULT, "live-status.json")
+USAGE_URL = os.environ.get("CSV_USAGE_URL") or "https://api.anthropic.com/api/oauth/usage"
+LIVE_INTERVAL = 5 * 60 * 1000
+TOOL_VERSION = "1.2.0"
+
+
+def _cli_credentials():
+    """Claude Code's stored OAuth credentials (macOS Keychain, or ~/.claude/.credentials.json)."""
+    raw = None
+    if os.environ.get("CSV_CREDENTIALS_FILE"):          # tests
+        try:
+            with open(os.environ["CSV_CREDENTIALS_FILE"], encoding="utf-8") as f:
+                raw = f.read()
+        except OSError:
+            raw = None
+    elif sys.platform == "darwin":
+        try:
+            r = subprocess.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                               capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                raw = r.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            raw = None
+    if not raw:
+        path = os.path.join(HOME, ".claude", ".credentials.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = f.read()
+        except OSError:
+            raw = None
+    try:
+        oauth = (json.loads(raw) or {}).get("claudeAiOauth") or {}
+    except (TypeError, ValueError):
+        oauth = {}
+    return oauth if oauth.get("accessToken") else None
+
+
+def _parse_reset(v):
+    if v in (None, ""):
+        return None
+    if isinstance(v, (int, float)):
+        return int(v if v > 1e11 else v * 1000)
+    ms = _iso_ms(v)
+    return ms or None
+
+
+def fetch_live_usage(force=False):
+    """One read of the official usage for the account Claude Code is signed in to. Rate-limited."""
+    import urllib.error
+    import urllib.request
+    cfg = tool_config()
+    status = load_json(LIVE_STATUS, {}) or {}
+    now = int(time.time() * 1000)
+    if not cfg.get("exact_mode") and not force:
+        return status
+    if not force and now < max(status.get("nextAt", 0), status.get("lastAttempt", 0) + LIVE_INTERVAL):
+        return status
+    ident = _identity_from(CLAUDE_JSON) or {}
+    status.update({"lastAttempt": now, "email": ident.get("email"), "org": ident.get("org")})
+    creds = _cli_credentials()
+    if not creds:
+        status.update({"ok": False, "error": "no_credentials", "nextAt": now + LIVE_INTERVAL})
+        write_json(LIVE_STATUS, status)
+        return status
+    if creds.get("expiresAt") and int(creds["expiresAt"]) <= now:
+        # don't refresh it ourselves (that would rotate Claude Code's token); Claude Code does it on next use
+        status.update({"ok": False, "error": "token_expired", "nextAt": now + LIVE_INTERVAL})
+        write_json(LIVE_STATUS, status)
+        return status
+    req = urllib.request.Request(USAGE_URL, headers={
+        "Authorization": "Bearer " + creds["accessToken"],
+        "anthropic-beta": "oauth-2025-04-20",
+        "Accept": "application/json",
+        "User-Agent": f"session-keeper/{TOOL_VERSION} (+https://github.com/weinihu/claude-session-keeper)",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        back = 30 * 60 * 1000 if e.code == 429 else LIVE_INTERVAL
+        status.update({"ok": False, "error": f"http_{e.code}", "nextAt": now + back})
+        write_json(LIVE_STATUS, status)
+        return status
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        status.update({"ok": False, "error": "network", "nextAt": now + LIVE_INTERVAL})
+        write_json(LIVE_STATUS, status)
+        return status
+    rec = {"t": now, "org": ident.get("org"), "source": "oauth_usage"}
+    for key in ("five_hour", "seven_day"):
+        w = data.get(key) or {}
+        if isinstance(w, dict) and ("utilization" in w or "resets_at" in w):
+            reset = _parse_reset(w.get("resets_at"))
+            rec[key] = {"used": w.get("utilization"), "resets_at": (reset // 1000) if reset else None}
+    if rec.get("org") and ("five_hour" in rec or "seven_day" in rec):
+        with open(LIVE_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+    status.update({"ok": True, "error": None, "lastOk": now, "nextAt": now + LIVE_INTERVAL,
+                   "fiveHour": (rec.get("five_hour") or {}).get("used"),
+                   "weekly": (rec.get("seven_day") or {}).get("used")})
+    write_json(LIVE_STATUS, status)
+    return status
+
+
+def live_samples(max_age_ms=7 * 86400 * 1000):
+    out, cutoff = [], int(time.time() * 1000) - max_age_ms
+    try:
+        with open(LIVE_FILE, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("t", 0) >= cutoff and r.get("org"):
+                    out.append(r)
+    except OSError:
+        pass
+    return out
+
+
+def cmd_live(args):
+    if args.enable is not None:
+        cfg_path = os.path.join(VAULT, "config.json")
+        cfg = load_json(cfg_path, {}) or {}
+        cfg["exact_mode"] = args.enable == "on"
+        write_json(cfg_path, cfg)
+    st = fetch_live_usage(force=args.force)
+    st = dict(st, enabled=bool(tool_config().get("exact_mode")))
+    if args.json:
+        print(json.dumps(st, ensure_ascii=False))
+        return
+    if st.get("ok"):
+        print(T(f"精确模式：{st.get('email')} 5 小时 {st.get('fiveHour')}% · 每周 {st.get('weekly')}%",
+                f"Exact mode: {st.get('email')} 5-hour {st.get('fiveHour')}% · weekly {st.get('weekly')}%"))
+    else:
+        print(T("精确模式：", "Exact mode: ") + str(st.get("error") or T("未开启", "off")))
 
 
 # ---------------------------------------------------------------- launchd
@@ -1581,13 +1732,17 @@ def main():
     sp = sub.add_parser("usage", help="各账号额度（5 小时 / 每周）")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--rename", nargs=2, metavar=("ORG", "NAME"), help="给账号起个名字")
+    sp = sub.add_parser("live", help="精确模式：读取官方额度（需开启）")
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--force", action="store_true", help="立即读一次（忽略 5 分钟间隔）")
+    sp.add_argument("--enable", choices=["on", "off"], help="开启或关闭精确模式")
     sp = sub.add_parser("auto", help="后台任务：备份 + 检测换号")
     sp.add_argument("--no-open", action="store_true", help="检测到换号时不打开界面（测试用）")
     sub.add_parser("uninstall-agent", help="卸载后台定时自动备份")
     args = p.parse_args()
     {"backup": cmd_backup, "restore": cmd_restore, "sync": cmd_sync, "status": cmd_status,
      "install-agent": cmd_install_agent, "uninstall-agent": cmd_uninstall_agent,
-     "rollback": cmd_rollback, "auto": cmd_auto, "prune": cmd_prune, "usage": cmd_usage}[args.cmd](args)
+     "rollback": cmd_rollback, "auto": cmd_auto, "prune": cmd_prune, "usage": cmd_usage, "live": cmd_live}[args.cmd](args)
 
 
 if __name__ == "__main__":

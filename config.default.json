@@ -8,5 +8,6 @@
     "max_age_days": 3,
     "max_per_project": 2,
     "always_keep": {}
-  }
+  },
+  "exact_mode": false
 }

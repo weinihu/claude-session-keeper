@@ -108,7 +108,9 @@ The Claude app writes the signed-in account's plan usage to `~/Library/Applicati
 - **Emails** come from the account info Claude Code keeps in `~/.claude.json` (never the token). Each account's email is recorded the first time you sign in to it and stays on your Mac.
 - **Refresh** re-reads the local file. To update another account, sign in to it and use Claude as usual.
 
-It never calls Anthropic's servers, never reads tokens, and doesn't change or work around any limits. It only shows what the app already recorded.
+By default it never calls Anthropic's servers and never reads tokens; it only shows what Claude already recorded.
+
+**Exact mode (opt-in):** in Settings you can turn on *Exact mode*. Every 5 minutes it uses the sign-in Claude Code already stores to ask Anthropic for the signed-in account's usage — the same endpoint Claude Code's own `/usage` uses — so percentages and reset times are official. The credential is used for that request only (never stored, refreshed or sent elsewhere), it backs off on errors, and it covers the account the Claude Code **CLI** is signed in to. The endpoint is undocumented and may change.
 
 ## Build from source
 

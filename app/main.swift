@@ -69,6 +69,15 @@ struct Usage: Decodable {
     }
     let accounts: [Account]
     let sourceFound: Bool
+    /// Opt-in exact mode: official numbers for the account Claude Code is signed in to.
+    struct Exact: Decodable {
+        let enabled: Bool
+        let ok: Bool?
+        let error: String?
+        let email: String?
+        let lastOk: Double?
+    }
+    let exact: Exact?
 }
 
 struct KeepRules: Equatable {
@@ -203,6 +212,14 @@ final class Model: ObservableObject {
         }
         switchTarget = a
         showSwitchGuide = true
+    }
+
+    func setExactMode(_ on: Bool) async {
+        busy = true; defer { busy = false }
+        var args = ["live", "--enable", on ? "on" : "off", "--json"]
+        if on { args.append("--force") }          // read once right away (first time: Keychain asks)
+        _ = await python(args)
+        await loadUsage()
     }
 
     func startRename(_ a: Usage.Account) {
@@ -957,6 +974,7 @@ struct ContentView: View {
                 refreshControl
             }
             if let u = m.usage, !u.accounts.isEmpty {
+                if let ex = u.exact, ex.enabled { exactBanner(ex, u) }
                 VStack(spacing: 12) {
                     ForEach(u.accounts) { a in usageCard(a) }
                 }
@@ -974,6 +992,28 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    func exactBanner(_ ex: Usage.Exact, _ u: Usage) -> some View {
+        let desktop = u.accounts.first { $0.current }?.email
+        let mismatch = ex.email != nil && desktop != nil && ex.email != desktop
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: mismatch ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
+                .foregroundStyle(mismatch ? Color.orange : Color.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(ex.ok == true ? L("精确模式：\(ex.email ?? "") 的额度来自 Anthropic 官方", "Exact mode: \(ex.email ?? "")'s usage comes from Anthropic")
+                                   : exactStatusText(ex))
+                    .font(.callout.weight(.medium))
+                if mismatch {
+                    Text(L("命令行登录的是 \(ex.email ?? "")，桌面版当前是 \(desktop ?? "")，所以桌面版这个号仍是本地数据。",
+                           "The CLI is signed in to \(ex.email ?? ""), the desktop app to \(desktop ?? "") — the desktop account still uses local data."))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill((mismatch ? Color.orange : Color.green).opacity(0.08)))
     }
 
     func usageCard(_ a: Usage.Account) -> some View {
@@ -1157,6 +1197,47 @@ struct ContentView: View {
         }
     }
 
+    var exactModeCard: some View {
+        let ex = m.usage?.exact
+        let on = ex?.enabled ?? false
+        return Card {
+            VStack(alignment: .leading, spacing: 10) {
+                switchRow(L("精确模式（读取官方额度）", "Exact mode (official usage)"),
+                          L("开启后每 5 分钟用 Claude Code 自己保存的登录凭证，向 Anthropic 查询一次当前登录账号的额度（与 Claude Code 的 /usage 命令是同一个接口），百分比和重置时间都是官方数字。凭证只用于这次查询，不保存、不刷新、不发往别处。第一次开启时 macOS 会询问是否允许读取钥匙串。",
+                            "Every 5 minutes, uses the sign-in Claude Code already stores to ask Anthropic for the signed-in account's usage (the same endpoint as Claude Code's /usage) — official percentages and reset times. The credential is used for that request only: never stored, refreshed or sent elsewhere. The first time, macOS asks to allow Keychain access."),
+                          Binding(get: { on }, set: { v in Task { await m.setExactMode(v) } }))
+                if on {
+                    Divider()
+                    HStack(spacing: 8) {
+                        Circle().fill((ex?.ok ?? false) ? Color.green : Color.orange).frame(width: 7, height: 7)
+                        Text(exactStatusText(ex)).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text(L("只覆盖命令行版 Claude Code 登录的那个号；想让它和桌面版一致，在终端里运行 claude 并用 /login 登录同一个号。",
+                           "Covers only the account the Claude Code CLI is signed in to; to match the desktop app, run claude in Terminal and /login with the same account."))
+                        .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    func exactStatusText(_ ex: Usage.Exact?) -> String {
+        guard let ex = ex else { return "" }
+        if ex.ok == true {
+            return L("已连接：", "Connected: ") + (ex.email ?? "?")
+                + (ex.lastOk.map { L(" · 上次更新 ", " · updated ") + shortTime($0) } ?? "")
+        }
+        switch ex.error ?? "" {
+        case "no_credentials": return L("没找到 Claude Code 的登录：在终端运行 claude 登录一次即可。", "No Claude Code sign-in found: run claude in Terminal and sign in once.")
+        case "token_expired": return L("登录凭证已过期：打开一次 Claude Code 它会自动续期，之后这里会恢复。", "Sign-in expired: open Claude Code once and it renews itself.")
+        case "http_401", "http_403": return L("官方拒绝了这次查询（登录已失效），在 Claude Code 里重新登录即可。", "Anthropic refused the request (sign-in no longer valid) — sign in again in Claude Code.")
+        case "http_429": return L("查询太频繁，已自动暂停 30 分钟。", "Too many requests — paused for 30 minutes.")
+        case "network": return L("网络连接失败，稍后会自动重试。", "Network error — will retry.")
+        case "": return L("等待第一次读取…", "Waiting for the first read…")
+        default: return L("读取失败：", "Read failed: ") + (ex.error ?? "")
+        }
+    }
+
     // MARK: guide
 
     var guidePage: some View {
@@ -1226,6 +1307,7 @@ struct ContentView: View {
                           }))
                 }
             }
+            exactModeCard
             Card {
                 HStack(spacing: 12) {
                     Image(systemName: "folder").font(.system(size: 18)).foregroundStyle(brand)
