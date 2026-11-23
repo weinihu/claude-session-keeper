@@ -4,6 +4,7 @@
 // on external volumes, and the vault copy is what the launchd job runs).
 import SwiftUI
 import AppKit
+import WebKit
 
 let env = ProcessInfo.processInfo.environment
 let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -98,6 +99,10 @@ final class Model: ObservableObject {
     @Published var refreshedAt: Date?
     @Published var switchTarget: Usage.Account?
     @Published var showSwitchGuide = false
+    @Published var autoRestore = true
+    @Published var countdown: Int?            // seconds left before an automatic restore
+    @Published var showAdPreview = false
+    var countdownTask: Task<Void, Never>?
     @Published var page: Page? = Page(rawValue: env["CSV_PAGE"] ?? "") ?? .overview
 
     // MARK: install / python
@@ -216,6 +221,49 @@ final class Model: ObservableObject {
         r.days = kr["max_age_days"] as? Int ?? 3
         r.perProject = kr["max_per_project"] as? Int ?? 2
         if r != rules { rules = r }
+        let ar = cfg["auto_restore"] as? Bool ?? true
+        if ar != autoRestore { autoRestore = ar }
+    }
+
+    func saveAutoRestore(_ on: Bool) {
+        autoRestore = on
+        var cfg: [String: Any] = [:]
+        if let data = FileManager.default.contents(atPath: configPath),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { cfg = obj }
+        cfg["auto_restore"] = on
+        if let out = try? JSONSerialization.data(withJSONObject: cfg, options: [.prettyPrinted, .sortedKeys]) {
+            try? out.write(to: URL(fileURLWithPath: configPath))
+        }
+    }
+
+    /// After a switch: count down, then restore by itself (Claude restarts). Cancelable.
+    func startAutoRestore(seconds: Int = 10) {
+        countdownTask?.cancel()
+        countdown = seconds
+        NSApp.activate(ignoringOtherApps: true)
+        countdownTask = Task { @MainActor in
+            while let left = countdown, left > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { return }
+                countdown = (countdown ?? 1) - 1
+            }
+            if countdown == 0 {
+                countdown = nil
+                await runWithClaudeClosed(["sync", "--all"])
+            }
+        }
+    }
+
+    func cancelAutoRestore() {
+        countdownTask?.cancel()
+        countdown = nil
+        append(L("已取消自动恢复。需要时可以在「概览」点「恢复所有对话」。", "Automatic restore canceled. Use Restore all chats on Overview anytime."))
+    }
+
+    func restoreNow() {
+        countdownTask?.cancel()
+        countdown = nil
+        Task { await runWithClaudeClosed(["sync", "--all"]) }
     }
 
     func saveRules(_ r: KeepRules) {
@@ -243,7 +291,8 @@ final class Model: ObservableObject {
         try? FileManager.default.removeItem(atPath: path)
         if let acc = obj["account"] as? String, acc != status?.currentAccount { return }
         switchMissing = obj["missing"] as? Int ?? 0
-        if switchMissing > 0 && !busy { showSwitch = true; NSApp.activate(ignoringOtherApps: true) }
+        guard switchMissing > 0 && !busy else { return }
+        if autoRestore { startAutoRestore() } else { showSwitch = true; NSApp.activate(ignoringOtherApps: true) }
     }
 
     func append(_ s: String) {
@@ -365,8 +414,9 @@ struct Card<Content: View>: View {
         content
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primary.opacity(0.07)))
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.primary.opacity(0.06)))
+            .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
     }
 }
 
@@ -437,27 +487,91 @@ struct Bar: View {
 }
 
 /// Sponsor slot — clearly labelled as an ad, opens the site in the browser.
+/// Sponsor banner — clearly labelled as an ad. Nothing is loaded until you press Preview.
 struct AdCard: View {
+    @ObservedObject var m: Model
     var body: some View {
-        Link(destination: URL(string: "https://tutu8.shop")!) {
-            HStack(spacing: 12) {
-                Text(L("广告", "Ad")).font(.caption2.bold()).foregroundStyle(.white)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(brand))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("tutu8.shop").font(.callout.weight(.semibold)).foregroundStyle(.primary)
-                    Text(L("作者自营的充值网站", "The author's top-up shop")).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(L("去看看 ›", "Visit ›")).font(.callout.weight(.medium)).foregroundStyle(brand)
+        HStack(spacing: 18) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(LinearGradient(colors: [Color(red: 1, green: 0.78, blue: 0.55), Color(red: 0.93, green: 0.47, blue: 0.27)],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                Image(systemName: "bolt.fill").font(.system(size: 26, weight: .bold)).foregroundStyle(.white)
             }
-            .padding(.horizontal, 14).padding(.vertical, 11)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(brand.opacity(0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(brand.opacity(0.22)))
+            .frame(width: 64, height: 64)
+            .shadow(color: brand.opacity(0.35), radius: 8, y: 3)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(L("广告", "Ad")).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 2).background(Capsule().fill(brand))
+                    Text("tutu8.shop").font(.system(size: 17, weight: .bold))
+                }
+                Text(L("作者自营的充值网站", "The author's own top-up shop")).font(.callout).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    chip(L("作者自营", "Run by the author"))
+                    chip(L("支持本项目", "Supports this project"))
+                }
+            }
+            Spacer()
+            VStack(spacing: 8) {
+                Button { m.showAdPreview = true } label: {
+                    Label(L("预览", "Preview"), systemImage: "eye").frame(width: 96)
+                }
+                .buttonStyle(.bordered)
+                Link(destination: URL(string: "https://tutu8.shop")!) {
+                    Label(L("去看看", "Visit"), systemImage: "arrow.up.right").frame(width: 96)
+                }
+                .buttonStyle(.borderedProminent)
+            }
         }
-        .buttonStyle(.plain)
-        .help("https://tutu8.shop")
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(LinearGradient(colors: [brand.opacity(0.10), brand.opacity(0.03)], startPoint: .topLeading, endPoint: .bottomTrailing))
+        )
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(brand.opacity(0.25)))
+        .sheet(isPresented: $m.showAdPreview) { AdPreview(m: m) }
     }
+
+    func chip(_ t: String) -> some View {
+        Text(t).font(.caption2.weight(.medium)).foregroundStyle(brand)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(Capsule().fill(brand.opacity(0.12)))
+    }
+}
+
+/// In-app preview of the sponsor site (the only time the app touches the network).
+struct AdPreview: View {
+    @ObservedObject var m: Model
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text(L("广告", "Ad")).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 2).background(Capsule().fill(brand))
+                Text("tutu8.shop").font(.headline)
+                Text(L("预览", "preview")).foregroundStyle(.secondary)
+                Spacer()
+                Link(L("在浏览器中打开", "Open in browser"), destination: URL(string: "https://tutu8.shop")!)
+                Button(L("关闭", "Close")) { m.showAdPreview = false }.keyboardShortcut(.cancelAction)
+            }
+            .padding(12)
+            Divider()
+            WebPreview(url: URL(string: "https://tutu8.shop")!)
+        }
+        .frame(width: 900, height: 620)
+    }
+}
+
+struct WebPreview: NSViewRepresentable {
+    let url: URL
+    func makeNSView(context: Context) -> WKWebView {
+        let cfg = WKWebViewConfiguration()
+        cfg.websiteDataStore = .nonPersistent()          // no cookies kept
+        let v = WKWebView(frame: .zero, configuration: cfg)
+        v.load(URLRequest(url: url))
+        return v
+    }
+    func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
 struct PageHeader<Trailing: View>: View {
@@ -495,6 +609,7 @@ struct ContentView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    if let n = m.countdown { autoRestoreBanner(n) }
                     if let e = m.error { errorBanner(e) }
                     switch m.page ?? .overview {
                     case .overview: overviewPage
@@ -619,6 +734,38 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.05)))
     }
 
+    func autoRestoreBanner(_ n: Int) -> some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle().stroke(Color.white.opacity(0.35), lineWidth: 3)
+                Circle().trim(from: 0, to: CGFloat(n) / 10).stroke(Color.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text("\(n)").font(.system(size: 15, weight: .bold, design: .rounded)).foregroundStyle(.white)
+            }
+            .frame(width: 38, height: 38)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L("检测到你换了账号", "You switched accounts")).font(.headline).foregroundStyle(.white)
+                Text(L("\(n) 秒后自动把 \(m.switchMissing) 个对话恢复到这个号，Claude 会重启一下。",
+                       "Restoring \(m.switchMissing) chats to this account in \(n) s — Claude will restart."))
+                    .font(.callout).foregroundStyle(.white.opacity(0.9))
+            }
+            Spacer()
+            Button(L("取消", "Cancel")) { m.cancelAutoRestore() }
+                .buttonStyle(.plain).foregroundStyle(.white.opacity(0.9))
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(Capsule().stroke(Color.white.opacity(0.6)))
+            Button(L("立即恢复", "Restore now")) { m.restoreNow() }
+                .buttonStyle(.plain).foregroundStyle(brand).fontWeight(.semibold)
+                .padding(.horizontal, 14).padding(.vertical, 6)
+                .background(Capsule().fill(Color.white))
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .fill(LinearGradient(colors: [Color(red: 0.93, green: 0.52, blue: 0.31), Color(red: 0.82, green: 0.38, blue: 0.24)],
+                                 startPoint: .leading, endPoint: .trailing)))
+        .shadow(color: brand.opacity(0.25), radius: 10, y: 4)
+    }
+
     func errorBanner(_ e: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
@@ -661,7 +808,7 @@ struct ContentView: View {
                         }
                     }
                     if let u = currentUsage {
-                        HStack(spacing: 18) {
+                        VStack(alignment: .leading, spacing: 6) {
                             resetLine(L("5 小时", "5-hour"), u.fiveHourReset,
                                       u.fiveHour == nil ? L("暂无数据", "no data") : L("现在可用", "available now"))
                             resetLine(L("每周", "Weekly"), u.weeklyReset, L("重置时间未知", "reset unknown"))
@@ -735,7 +882,7 @@ struct ContentView: View {
                          ByteCountFormatter.string(fromByteCount: Int64(m.status?.vaultBytes ?? 0), countStyle: .file), "internaldrive")
             }
 
-            AdCard()
+            AdCard(m: m)
 
             if !m.log.isEmpty {
                 Card {
@@ -1056,12 +1203,19 @@ struct ContentView: View {
             PageHeader(title: L("设置", "Settings"), subtitle: L("后台任务、备份位置和关于", "Background job, vault and about"))
             Card {
                 let s = m.status
+                VStack(alignment: .leading, spacing: 12) {
+                switchRow(L("换号后自动恢复对话", "Restore chats automatically after a switch"),
+                          L("检测到换号后倒数 10 秒自动恢复（Claude 会重启），期间可以取消。关掉后改为弹窗询问。",
+                            "After a switch, restores on its own after a 10-second countdown (Claude restarts); you can cancel. Off: ask first."),
+                          Binding(get: { m.autoRestore }, set: { m.saveAutoRestore($0) }))
+                Divider()
                 switchRow(L("自动备份 + 换号提醒", "Auto backup + switch alert"),
                           L("每分钟备份一次对话列表和额度记录；发现换号会弹窗提醒。",
                             "Backs up chat lists and usage every minute; prompts you after an account switch."),
                           Binding(get: { s?.autoBackup ?? false }, set: { on in
                               Task { await m.run([on ? "install-agent" : "uninstall-agent"]) }
                           }))
+                }
             }
             Card {
                 HStack(spacing: 12) {
@@ -1090,7 +1244,7 @@ struct ContentView: View {
                         Link("GitHub", destination: URL(string: "https://github.com/weinihu/claude-session-keeper")!)
                     }
                     Divider()
-                    Label(L("只读写本机文件：不联网，不碰登录信息、token 和账号设置。恢复和清理之前都会自动拍快照，可以一键撤销。",
+                    Label(L("只读写本机文件，不碰登录信息、token 和账号设置；除了你主动打开的广告预览，本工具不联网。恢复和清理之前都会自动拍快照，可以一键撤销。",
                             "Local files only: no network, never touches sign-in, tokens or account settings. Every restore and cleanup takes a snapshot first, so you can undo."),
                           systemImage: "lock.shield")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -1098,7 +1252,7 @@ struct ContentView: View {
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
-            AdCard()
+            AdCard(m: m)
         }
     }
 }

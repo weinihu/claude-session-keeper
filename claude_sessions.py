@@ -1041,9 +1041,12 @@ def scan_transcripts():
        - `rate_limit_info` (exact reset time when a 5-hour / weekly limit was hit).
     Only newly appended bytes are read on later runs."""
     db = load_json(EVENTS_FILE, {}) or {}
+    if db.get("version", 1) < 3:                 # v3 records prompts with when their email was seen
+        db = {}
     files = db.get("files", {})
     emails = {tuple(x) for x in db.get("emails", [])}
     limits = {tuple(x) for x in db.get("limits", [])}
+    prompts = {tuple(x) for x in db.get("prompts", [])}
     changed = False
     if os.path.isdir(PROJECTS):
         for proj in os.listdir(PROJECTS):
@@ -1059,9 +1062,10 @@ def scan_transcripts():
                 except OSError:
                     continue
                 key = proj + "/" + name
-                start = files.get(key, 0)
+                state = files.get(key) or {}
+                start, who, who_t = state.get("offset", 0), state.get("email"), state.get("email_t", 0)
                 if start > size:
-                    start = 0
+                    start, who, who_t = 0, None, 0
                 if start == size:
                     continue
                 try:
@@ -1072,7 +1076,8 @@ def scan_transcripts():
                     continue
                 end = chunk.rfind(b"\n") + 1          # only complete lines
                 for raw in chunk[:end].split(b"\n"):
-                    if b"userEmail" not in raw and b"rate_limit_info" not in raw:
+                    is_user = b'"type":"user"' in raw or b'"type": "user"' in raw
+                    if b"userEmail" not in raw and b"rate_limit_info" not in raw and not is_user:
                         continue
                     try:
                         d = json.loads(raw.decode("utf-8", "replace"))
@@ -1084,7 +1089,12 @@ def scan_transcripts():
                     if b"userEmail" in raw:
                         m = _EMAIL_RX.search(raw.decode("utf-8", "replace"))
                         if m:
-                            emails.add((t, m.group(1).lower()))
+                            who, who_t = m.group(1).lower(), t
+                            emails.add((t, who))
+                    if is_user and d.get("type") == "user" and not d.get("isSidechain") and (
+                            d.get("promptSource") or d.get("turnOrigin") == "human"
+                            or isinstance((d.get("message") or {}).get("content"), str)):
+                        prompts.add((t, who or "", who_t))
                     if b"rate_limit_info" in raw:
                         stack = [d]
                         while stack:
@@ -1096,12 +1106,15 @@ def scan_transcripts():
                                 stack.extend(o.values())
                             elif isinstance(o, list):
                                 stack.extend(o)
-                files[key] = start + end
+                files[key] = {"offset": start + end, "email": who, "email_t": who_t}
                 changed = True
     if changed:
-        write_json(EVENTS_FILE, {"version": 1, "files": files,
-                                 "emails": sorted(emails)[-5000:], "limits": sorted(limits)[-5000:]})
-    return sorted(emails), sorted(limits)
+        cutoff = int(time.time() * 1000) - 14 * 86400 * 1000
+        write_json(EVENTS_FILE, {"version": 3, "files": files,
+                                 "emails": sorted(emails)[-5000:], "limits": sorted(limits)[-5000:],
+                                 "prompts": sorted(p for p in prompts if p[0] >= cutoff)})
+    db_prompts = sorted(prompts)
+    return sorted(emails), sorted(limits), db_prompts
 
 
 def _sample_after(samples, t, within_ms):
@@ -1165,6 +1178,45 @@ def learn_identities(samples=None, email_events=None):
     return cur
 
 
+def five_hour_blocks(prompts, samples, email_events, names):
+    """5-hour windows per account from your own prompts (like ccusage's session blocks).
+    Each prompt belongs to the account whose email was last seen in the same conversation;
+    a window starts at the first prompt after the previous one ended, floored to 10 minutes
+    (that matches the reset times Claude reports)."""
+    email2org = {r["email"]: o for o, r in names.items() if r.get("email")}
+    timeline = sorted([(s["t"], s["org"]) for s in samples] +
+                      [(t, email2org[e]) for t, e in email_events if e in email2org])
+    stamps = [t for t, _ in timeline]
+
+    def org_at(t):
+        import bisect
+        i = bisect.bisect_right(stamps, t) - 1
+        if i >= 0 and t - timeline[i][0] < 12 * 3600 * 1000:
+            return timeline[i]
+        return (0, None)
+
+    per = {}
+    for p in prompts:
+        t, email = p[0], p[1]
+        seen = p[2] if len(p) > 2 else 0
+        g_t, g_org = org_at(t)
+        conv = email2org.get(email) if email else None
+        # the conversation's own email, unless the Mac switched accounts more recently than that
+        org = conv if conv and seen >= g_t else (g_org or conv)
+        if org:
+            per.setdefault(org, []).append(t)
+    out = {}
+    for org, ts in per.items():
+        end, bl = None, []
+        for t in sorted(ts):
+            if end is None or t >= end:
+                start = t // 600000 * 600000
+                end = start + FIVE_H
+                bl.append((start, end))
+        out[org] = bl
+    return out
+
+
 def _attribute_limit(samples, t, kind):
     """Which organization hit this limit? The one whose usage sample around that time is full."""
     key = "fh" if kind == "five_hour" else "sd"
@@ -1182,11 +1234,12 @@ def usage_data(now_ms=None):
     now = now_ms or int(time.time() * 1000)
     samples = merge_usage()
     try:
-        email_events, limit_events = scan_transcripts()
+        email_events, limit_events, prompt_events = scan_transcripts()
     except Exception:
-        email_events, limit_events = [], []
+        email_events, limit_events, prompt_events = [], [], []
     learn_identities(samples, email_events)
     names = account_names()
+    blocks = five_hour_blocks(prompt_events, samples, email_events, names)
 
     exact = {}                                    # org -> {"five_hour": [resetsAt...], "seven_day": [...]}
     for t, kind, reset in limit_events:
@@ -1213,8 +1266,14 @@ def usage_data(now_ms=None):
         # ---- five-hour window
         fh_now, fh_est, fh_reset, fh_exact = fh, False, None, False
         future = [r for r in ex.get("five_hour", []) if r > now]
+        live = [b for b in blocks.get(org, []) if b[0] <= now < b[1]]
         if fh is not None and future:
             fh_reset, fh_exact = min(future), True
+        elif live:
+            # you have been sending messages with this account: the window started at your first one
+            fh_reset = live[-1][1]
+            if fh is None or (fh == 0 and t < live[-1][0]):
+                fh_now, fh_est = fh, False
         elif fh is not None:
             if now - t >= FIVE_H:
                 fh_now, fh_est = 0, True

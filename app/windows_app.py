@@ -694,6 +694,25 @@ class App:
         button(r, tr("关闭", "Turn off") if on else tr("开启", "Turn on"),
                lambda: self.run_action(["uninstall-agent" if on else "install-agent"]), primary=not on).pack(side="right")
 
+        cfg_path = Path(os.environ.get("CSV_VAULT", "")) / "config.json"
+        cfg = load_json(cfg_path, {}) or {}
+        ar = cfg.get("auto_restore", True)
+        tk.Frame(a, bg=BORDER, height=1).pack(fill="x", padx=16)
+        r2 = tk.Frame(a, bg=CARD)
+        r2.pack(fill="x", padx=16, pady=12)
+        t2 = tk.Frame(r2, bg=CARD)
+        t2.pack(side="left")
+        label(t2, tr("换号后自动恢复对话", "Restore chats automatically after a switch"), 10, "bold").pack(anchor="w")
+        label(t2, tr("检测到换号后倒数 10 秒自动恢复，期间可以取消。关掉后改为弹窗询问。",
+                     "After a switch, restores after a 10-second countdown (cancelable). Off: ask first."), 9, color=MUTED).pack(anchor="w")
+
+        def toggle_ar():
+            c = load_json(cfg_path, {}) or {}
+            c["auto_restore"] = not c.get("auto_restore", True)
+            cfg_path.write_text(json.dumps(c, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.render()
+        button(r2, tr("关闭", "Turn off") if ar else tr("开启", "Turn on"), toggle_ar, primary=not ar).pack(side="right")
+
         d = card(p)
         d.pack(fill="x", pady=(12, 0))
         for title, path, btn, cmd in (
@@ -721,22 +740,37 @@ class App:
         gh = label(r, "GitHub ›", 10, color=BRAND, cursor="hand2")
         gh.pack(side="right")
         gh.bind("<Button-1>", lambda e: webbrowser.open(GITHUB_URL))
-        label(ab, tr("只读写本机文件：不联网，不碰登录信息、token 和账号设置。恢复和清理前都会自动拍快照，可以一键撤销。\n与 Anthropic 无关。Claude 是 Anthropic, PBC 的商标。",
+        label(ab, tr("只读写本机文件，不碰登录信息、token 和账号设置；除了你主动打开的广告，本工具不联网。恢复和清理前都会自动拍快照，可以一键撤销。\n与 Anthropic 无关。Claude 是 Anthropic, PBC 的商标。",
                      "Local files only: no network, never touches sign-in, tokens or account settings. Every restore and cleanup takes a snapshot first.\nNot affiliated with Anthropic. Claude is a trademark of Anthropic, PBC."),
               9, color=MUTED, wraplength=640).pack(anchor="w", padx=16, pady=(0, 12))
         self.ad_card(p)
 
     def ad_card(self, p):
-        ad = tk.Frame(p, bg="#FFF6F0", highlightbackground="#F6D5C3", highlightthickness=1)
+        """Sponsor banner, clearly labelled. Nothing is loaded until you open it."""
+        bg = "#FFF3EC"
+        ad = tk.Frame(p, bg=bg, highlightbackground="#F4CDB8", highlightthickness=1)
         ad.pack(fill="x", pady=(16, 0))
-        r = tk.Frame(ad, bg="#FFF6F0")
-        r.pack(fill="x", padx=16, pady=12)
-        tk.Label(r, text=tr("广告", "Ad"), font=font(8, "bold"), fg="white", bg=BRAND, padx=6).pack(side="left")
-        t = tk.Frame(r, bg="#FFF6F0")
-        t.pack(side="left", padx=10)
-        label(t, "tutu8.shop", 11, "bold", bg="#FFF6F0").pack(anchor="w")
-        label(t, tr("作者自营的充值网站", "The author's top-up shop"), 9, color=MUTED, bg="#FFF6F0").pack(anchor="w")
-        button(r, tr("去看看", "Visit"), lambda: webbrowser.open(AD_URL), bg="#FFF6F0").pack(side="right")
+        r = tk.Frame(ad, bg=bg)
+        r.pack(fill="x", padx=18, pady=16)
+        logo = tk.Canvas(r, width=60, height=60, bg=bg, highlightthickness=0)
+        logo.create_oval(2, 2, 58, 58, fill=BRAND, outline=BRAND)
+        logo.create_text(30, 31, text="⚡", fill="white", font=font(20, "bold"))
+        logo.pack(side="left")
+        t = tk.Frame(r, bg=bg)
+        t.pack(side="left", padx=14)
+        top = tk.Frame(t, bg=bg)
+        top.pack(anchor="w")
+        tk.Label(top, text=tr("广告", "Ad"), font=font(8, "bold"), fg="white", bg=BRAND, padx=6).pack(side="left")
+        label(top, "  tutu8.shop", 13, "bold", bg=bg).pack(side="left")
+        label(t, tr("作者自营的充值网站", "The author's own top-up shop"), 10, color=MUTED, bg=bg).pack(anchor="w", pady=(2, 6))
+        chips = tk.Frame(t, bg=bg)
+        chips.pack(anchor="w")
+        for c in (tr("作者自营", "Run by the author"), tr("支持本项目", "Supports this project")):
+            tk.Label(chips, text=c, font=font(8), fg=BRAND, bg="#FBE0D2", padx=6, pady=1).pack(side="left", padx=(0, 6))
+        btns = tk.Frame(r, bg=bg)
+        btns.pack(side="right")
+        button(btns, tr("去看看 ↗", "Visit ↗"), lambda: webbrowser.open(AD_URL), primary=True, bg=bg).pack(fill="x")
+        button(btns, tr("预览", "Preview"), lambda: webbrowser.open(AD_URL), bg=bg).pack(fill="x", pady=(6, 0))
 
     # ---------------------------------------------------------------- actions
     def claude_running_guard(self):
@@ -747,8 +781,11 @@ class App:
             return True
         return False
 
-    def restore(self):
+    def restore(self, confirm=True):
         if self.claude_running_guard():
+            return
+        if not confirm:
+            self.run_action(["sync", "--all"])
             return
         if messagebox.askyesno(tr("恢复对话？", "Restore chats?"),
                                tr("会先备份现有列表，再把所有对话恢复到本机的 Claude 账号。完成后打开 Claude 就能看到。",
@@ -837,10 +874,57 @@ class App:
         count = pending.get("missing", 0)
         self.root.deiconify()
         self.root.lift()
-        if messagebox.askyesno(tr("检测到你换了账号", "You switched accounts"),
-                               tr(f"当前账号里缺少 {count} 个之前的对话。现在恢复吗？",
-                                  f"This account is missing {count} of your chats. Restore now?")):
+        cfg = load_json(Path(os.environ.get("CSV_VAULT", "")) / "config.json", {}) or {}
+        if cfg.get("auto_restore", True):
+            self.auto_restore_countdown(count)
+        elif messagebox.askyesno(tr("检测到你换了账号", "You switched accounts"),
+                                 tr(f"当前账号里缺少 {count} 个之前的对话。现在恢复吗？",
+                                    f"This account is missing {count} of your chats. Restore now?")):
             self.restore()
+
+    def auto_restore_countdown(self, count, seconds=10):
+        """Restore by itself after a short countdown; the user can cancel or go now."""
+        win = tk.Toplevel(self.root, bg=BRAND)
+        win.title(tr("检测到你换了账号", "You switched accounts"))
+        win.attributes("-topmost", True)
+        win.resizable(False, False)
+        box = tk.Frame(win, bg=BRAND)
+        box.pack(padx=22, pady=18)
+        label(box, tr("检测到你换了账号", "You switched accounts"), 13, "bold", color="white", bg=BRAND).pack(anchor="w")
+        msg = label(box, "", 10, color="white", bg=BRAND)
+        msg.pack(anchor="w", pady=(4, 12))
+        row = tk.Frame(box, bg=BRAND)
+        row.pack(anchor="e")
+        state = {"left": seconds, "done": False}
+
+        def finish(go):
+            if state["done"]:
+                return
+            state["done"] = True
+            win.destroy()
+            if go:
+                self.restore(confirm=False)
+            else:
+                self.log_lines.append(tr("已取消自动恢复。需要时可以在「概览」点「恢复所有对话」。",
+                                         "Automatic restore canceled."))
+                self.render()
+
+        tk.Button(row, text=tr("取消", "Cancel"), command=lambda: finish(False), font=font(10), relief="flat",
+                  bg="#F3A47F", fg="white", activebackground="#F0B394", bd=0, padx=14, pady=5).pack(side="left", padx=(0, 8))
+        tk.Button(row, text=tr("立即恢复", "Restore now"), command=lambda: finish(True), font=font(10, "bold"), relief="flat",
+                  bg="white", fg=BRAND, activebackground="#FFF1EA", bd=0, padx=14, pady=5).pack(side="left")
+
+        def tick():
+            if state["done"]:
+                return
+            msg.configure(text=tr(f"{state['left']} 秒后自动把 {count} 个对话恢复到这个号。\n请先完全退出 Claude（含右下角托盘图标）。",
+                                  f"Restoring {count} chats to this account in {state['left']} s.\nQuit Claude completely first (including the tray icon)."))
+            if state["left"] <= 0:
+                finish(True)
+                return
+            state["left"] -= 1
+            win.after(1000, tick)
+        tick()
 
 
 def main():
