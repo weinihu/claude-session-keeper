@@ -762,10 +762,10 @@ class App:
         top.pack(anchor="w")
         tk.Label(top, text=tr("广告", "Ad"), font=font(8, "bold"), fg="white", bg=BRAND, padx=6).pack(side="left")
         label(top, "  tutu8.shop", 13, "bold", bg=bg).pack(side="left")
-        label(t, tr("作者自营的充值网站", "The author's own top-up shop"), 10, color=MUTED, bg=bg).pack(anchor="w", pady=(2, 6))
+        label(t, tr("AI 会员代充值 —— 作者自营的充值网站", "AI subscription top-ups — the author's own shop"), 10, color=MUTED, bg=bg).pack(anchor="w", pady=(2, 6))
         chips = tk.Frame(t, bg=bg)
         chips.pack(anchor="w")
-        for c in (tr("作者自营", "Run by the author"), tr("支持本项目", "Supports this project")):
+        for c in (tr("AI 会员代充", "AI subscription top-up"), tr("作者自营", "Run by the author"), tr("非 Anthropic 官方", "Not affiliated with Anthropic")):
             tk.Label(chips, text=c, font=font(8), fg=BRAND, bg="#FBE0D2", padx=6, pady=1).pack(side="left", padx=(0, 6))
         btns = tk.Frame(r, bg=bg)
         btns.pack(side="right")

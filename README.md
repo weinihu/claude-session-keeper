@@ -132,7 +132,7 @@ cd claude-session-keeper
 
 ## Sponsor
 
-> **Ad** — [**tutu8.shop**](https://tutu8.shop): the author's top-up shop. Shopping there helps keep this project going.
+> **Ad** — [**tutu8.shop**](https://tutu8.shop): **AI subscription top-up service** run by the author (third-party, not affiliated with Anthropic or any AI provider). Shopping there helps keep this project going.
 
 ## Disclaimer
 

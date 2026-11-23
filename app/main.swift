@@ -506,10 +506,12 @@ struct AdCard: View {
                         .padding(.horizontal, 6).padding(.vertical, 2).background(Capsule().fill(brand))
                     Text("tutu8.shop").font(.system(size: 17, weight: .bold))
                 }
-                Text(L("作者自营的充值网站", "The author's own top-up shop")).font(.callout).foregroundStyle(.secondary)
+                Text(L("AI 会员代充值 —— 作者自营的充值网站", "AI subscription top-ups — the author's own shop"))
+                    .font(.callout).foregroundStyle(.secondary)
                 HStack(spacing: 6) {
+                    chip(L("AI 会员代充", "AI subscription top-up"))
                     chip(L("作者自营", "Run by the author"))
-                    chip(L("支持本项目", "Supports this project"))
+                    chip(L("非 Anthropic 官方", "Not affiliated with Anthropic"))
                 }
             }
             Spacer()
@@ -549,7 +551,7 @@ struct AdPreview: View {
                 Text(L("广告", "Ad")).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
                     .padding(.horizontal, 6).padding(.vertical, 2).background(Capsule().fill(brand))
                 Text("tutu8.shop").font(.headline)
-                Text(L("预览", "preview")).foregroundStyle(.secondary)
+                Text(L("AI 会员代充 · 预览", "AI top-ups · preview")).foregroundStyle(.secondary)
                 Spacer()
                 Link(L("在浏览器中打开", "Open in browser"), destination: URL(string: "https://tutu8.shop")!)
                 Button(L("关闭", "Close")) { m.showAdPreview = false }.keyboardShortcut(.cancelAction)
