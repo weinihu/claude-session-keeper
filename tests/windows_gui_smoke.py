@@ -35,7 +35,7 @@ try:
 except ImportError:
     ImageGrab = None
 
-for page in ["overview", "usage", "chats", "settings"]:
+for page in ["overview", "usage", "chats", "guide", "settings"]:
     app.go(page)
     for _ in range(10):
         root.update()

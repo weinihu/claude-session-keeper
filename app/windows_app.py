@@ -476,8 +476,9 @@ class App:
             if a.get("current"):
                 tag(tr_, tr("当前", "Current")).pack(side="left", padx=6)
             label(t, a.get("email") if a.get("named") and a.get("email") else self.sub_of(a), 9, color=MUTED).pack(anchor="w")
-            sw = tk.Frame(r, bg=CARD, width=64)
+            sw = tk.Frame(r, bg=CARD, width=64, height=34)
             sw.pack(side="right", padx=(12, 0))
+            sw.pack_propagate(False)            # same width with or without the button, so bars line up
             if not a.get("current"):
                 button(sw, tr("切换", "Switch"), lambda acc=a: self.switch_to(acc)).pack()
             for lab, v, est in ((tr("周", "Wk"), a.get("weekly"), a.get("weeklyEstimated")),
