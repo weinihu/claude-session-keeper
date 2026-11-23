@@ -1160,7 +1160,7 @@ struct ContentView: View {
             guideCard("2", L("换号：三步", "Switching accounts: three steps"), [
                 L("在「额度」或「概览」里，对要换的号点「切换」，邮箱会自动复制。", "In Usage or Overview, click Switch on the account you want — its email is copied for you."),
                 L("在 Claude 左下角点头像 → 退出登录，再用这个邮箱登录，打开一次 Code 标签页。", "In Claude: avatar (bottom left) → Log out, sign in with that email, open the Code tab once."),
-                L("一分钟内会弹出「检测到你换了账号」，点「现在恢复」，之前的对话就回来了。", "Within a minute you'll be asked to restore — click Restore now and your chats are back."),
+                L("一分钟内会自动倒数 10 秒，把之前的对话恢复到这个号；想停下就点「取消」。", "Within a minute your chats are restored automatically after a 10-second countdown — Cancel stops it."),
             ])
             guideCard("3", L("额度怎么看", "Reading the usage"), [
                 L("百分比来自 Claude App 自己的记录。Claude 通常在你使用或打开它的「用量」面板时更新记录，所以没登录的号显示的是上次登录时的情况。",

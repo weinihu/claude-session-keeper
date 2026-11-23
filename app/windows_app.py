@@ -645,7 +645,7 @@ class App:
             (tr("换号：三步", "Switching accounts: three steps"), [
                 tr("在「额度」或「概览」里，对要换的号点「切换」，邮箱会自动复制。", "Click Switch on the account you want — its email is copied."),
                 tr("在 Claude 左下角点头像 → 退出登录，再用这个邮箱登录，打开一次 Code 标签页。", "In Claude: avatar → Log out, sign in with that email, open the Code tab once."),
-                tr("一分钟内会弹出「检测到你换了账号」，点「现在恢复」，之前的对话就回来了。", "Within a minute you'll be asked to restore your chats.")]),
+                tr("一分钟内会自动倒数 10 秒，把之前的对话恢复到这个号（可以取消）。", "Within a minute your chats are restored automatically after a 10-second countdown (cancelable).")]),
             (tr("额度怎么看", "Reading the usage"), [
                 tr("百分比来自 Claude 自己的记录，「Claude 记录于」就是数据的时间；没登录的号显示上次登录时的情况。",
                    "Percentages come from Claude's own record — \"recorded\" shows how fresh it is."),
@@ -668,7 +668,7 @@ class App:
             t.pack(side="left", padx=12, fill="x", expand=True)
             label(t, title, 11, "bold").pack(anchor="w", pady=(0, 6))
             for it in items:
-                label(t, "• " + it, 10, color=MUTED, wraplength=640).pack(anchor="w", pady=1)
+                label(t, "• " + it, 10, color=MUTED, wraplength=560).pack(anchor="w", pady=1)
 
     def switch_to(self, a):
         email = a.get("email") or ""
@@ -742,7 +742,7 @@ class App:
         gh.bind("<Button-1>", lambda e: webbrowser.open(GITHUB_URL))
         label(ab, tr("只读写本机文件，不碰登录信息、token 和账号设置；除了你主动打开的广告，本工具不联网。恢复和清理前都会自动拍快照，可以一键撤销。\n与 Anthropic 无关。Claude 是 Anthropic, PBC 的商标。",
                      "Local files only: no network, never touches sign-in, tokens or account settings. Every restore and cleanup takes a snapshot first.\nNot affiliated with Anthropic. Claude is a trademark of Anthropic, PBC."),
-              9, color=MUTED, wraplength=640).pack(anchor="w", padx=16, pady=(0, 12))
+              9, color=MUTED, wraplength=600).pack(anchor="w", padx=16, pady=(0, 12))
         self.ad_card(p)
 
     def ad_card(self, p):
