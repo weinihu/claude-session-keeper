@@ -1311,8 +1311,8 @@ def usage_data(now_ms=None):
         elif live:
             # you have been sending messages with this account: the window started at your first one
             fh_reset = live[-1][1]
-            if fh is None or (fh == 0 and t < live[-1][0]):
-                fh_now, fh_est = fh, False
+            if t < live[-1][0]:                             # used since Claude's last record: % unknown
+                fh_now, fh_est = None, True
         elif fh is not None:
             if now - t >= FIVE_H:
                 fh_now, fh_est = 0, True
@@ -1336,8 +1336,8 @@ def usage_data(now_ms=None):
             while a - WEEK > now:
                 a -= WEEK
             sd_reset, sd_exact = a, True
-            if max(anchors) <= now and t < max(anchors):   # a reset happened after the last sample
-                sd_now, sd_est = 0, True
+            if t < a - WEEK <= now:                         # the week rolled over after the last sample
+                sd_now, sd_est = None, True
         elif sd is not None:
             start, prev = None, None
             for y in xs:
