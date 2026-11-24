@@ -215,6 +215,8 @@ def app_running():
 
 
 def open_session_keeper():
+    if os.environ.get("CSV_NO_GUI"):   # tests: leave the pending file, don't launch anything
+        return
     if IS_WINDOWS:
         install = load_json(WINDOWS_INSTALL_FILE, {}) or {}
         command = install.get("gui_command")
@@ -255,12 +257,40 @@ def data_path_ready():
     return bool(APP_DIR and os.path.isdir(SESS_ROOT) and os.path.isfile(APP_CONFIG) and current_account())
 
 
+def current_org(acc=None):
+    """The org the app last used for this account, from its own config (None if unknown)."""
+    cfg = load_json(APP_CONFIG, {}) or {}
+    acc = acc or cfg.get("lastKnownAccountUuid")
+    for v in cfg.values():
+        if isinstance(v, dict) and v.get("accountUuid") == acc and v.get("orgUuid"):
+            return v["orgUuid"]
+    return None
+
+
+def _folder_activity(folder):
+    """Newest change inside a session folder (the folder's own mtime also moves when we write)."""
+    newest = 0
+    try:
+        for name in os.listdir(folder):
+            if name.startswith("local_") or name == "waiting-input":
+                newest = max(newest, os.path.getmtime(os.path.join(folder, name)))
+    except OSError:
+        pass
+    return newest
+
+
 def current_dirs():
+    """The session folder the app shows for the signed-in account.
+
+    When you switch accounts the app sometimes also writes a folder for <account>/<another account's org>.
+    Those extra folders are never shown, so pick the real one: the org the app's config names, else the
+    folder with the newest session change."""
     acc = current_account()
     dirs = [d for d in account_dirs() if d[0] == acc]
-    if len(dirs) > 1:  # 一个账号多个组织：取最近活跃的那个
-        dirs.sort(key=lambda d: os.path.getmtime(d[2]), reverse=True)
-        dirs = dirs[:1]
+    if len(dirs) > 1:
+        org = current_org(acc)
+        named = [d for d in dirs if d[1] == org]
+        dirs = named or sorted(dirs, key=lambda d: _folder_activity(d[2]), reverse=True)[:1]
     return acc, dirs
 
 
@@ -354,25 +384,47 @@ def locked():
         return False
 
 
+BULK_GONE = 5   # more than this many vanishing in one minute is the app tidying up, not you deleting
+
+
 def detect_deletions(vault):
-    """对比上一轮：账号目录还在、但里面某个会话文件没了 = 用户在 Claude 里删除了它。"""
+    """对比上一轮：当前账号正在显示的目录里，某个会话文件没了 = 用户在 Claude 里删除了它。
+
+    Only the folder Claude is showing counts, and only while the same account stays signed in:
+    files that vanish from other accounts' folders, or around an account switch, are the app's own
+    housekeeping. A tombstone removes the chat from every account, so we stay on the safe side."""
     prev = load_json(SEEN_FILE)
     now = current_seen()
+    acc, dirs = current_dirs()
     gone = set()
-    if isinstance(prev, dict):
-        for folder, sids in prev.items():
-            if folder not in now:                  # 整个目录没了是退出登录，不算删除
+    if isinstance(prev, dict) and acc and prev.get("_account") == acc:
+        for _, org, _ in dirs:
+            key = f"{acc}/{org}"
+            if key not in prev or key not in now:
                 continue
-            if not now[folder] and len(sids) > 3:  # 列表一下子全空了，也当作退出登录
+            sids = prev[key]
+            lost = set(sids) - set(now[key])
+            if not now[key] and len(sids) > 3:     # 列表一下子全空了：退出登录
                 continue
-            gone.update(set(sids) - set(now[folder]))
+            if len(lost) > BULK_GONE:              # 一下子少了一大批：App 在整理，不是你删的
+                stamp = dt.datetime.now().strftime("%m-%d %H:%M")
+                print(T(f"[{stamp}] {len(lost)} 个会话同时从列表里消失，看起来不是手动删除，保险库里的副本保留",
+                        f"[{stamp}] {len(lost)} chats vanished at once; that's not a manual delete, keeping the vault copies"))
+                continue
+            gone.update(lost)
     if gone:
         removed = tombstone(sorted(gone), vault)
         stamp = dt.datetime.now().strftime("%m-%d %H:%M")
         print(T(f"[{stamp}] 检测到删除了 {len(gone)} 个会话，已同步移除（其他账号里的副本 {removed} 个），以后不会再恢复",
                 f"[{stamp}] {len(gone)} chat(s) deleted in Claude — removed {removed} copies from other accounts; they won't be restored again"))
         now = current_seen()
-    write_json(SEEN_FILE, now)
+    write_seen(now)
+
+
+def write_seen(seen=None):
+    seen = dict(seen if seen is not None else current_seen())
+    seen["_account"] = current_account()
+    write_json(SEEN_FILE, seen)
 
 
 def snapshot(reason):
@@ -674,7 +726,7 @@ def cmd_prune(args):
         vault = read_vault()
         tombstone(list(drop), vault, reason="按保留规则清理")
         write_json(os.path.join(snap, "manifest.json"), {"written": manifest})
-        write_json(SEEN_FILE, current_seen())
+        write_seen()
     print(T(f"已清理 {len(drop)} 个对话（可以撤销）", f"Cleaned up {len(drop)} chat(s) (can be undone)"))
 
 
@@ -711,8 +763,18 @@ def plan_restore(vault, acc, folder, cfg, transcripts, verbose=False):
         if meta.get("scheduledTaskId") and cfg["skip_scheduled"]:
             continue
         cur = existing.get(sid)
-        if cur is not None and activity(cur) >= activity(meta):
+        if cur is not None and activity(cur) > activity(meta):
             continue
+        if cur is not None and activity(cur) == activity(meta):
+            # same last activity: only carry over a rename / archive / star made later in another account
+            if all(cur.get(k) == meta.get(k) for k in MEANINGFUL_FIELDS):
+                continue
+            try:
+                cur_mtime = os.path.getmtime(os.path.join(folder, sid + ".json"))
+            except OSError:
+                cur_mtime = 0
+            if (meta.get("_vault") or {}).get("srcMtime", 0) <= cur_mtime:
+                continue
         if cur is None and meta.get("cliSessionId") in existing_cli:
             continue  # 这个账号已经以别的条目持有同一段对话
         if meta.get("cliSessionId") not in transcripts and not any(
@@ -725,6 +787,34 @@ def plan_restore(vault, acc, folder, cfg, transcripts, verbose=False):
             continue
         plan.append((sid, meta, out, cur))
     return plan
+
+
+def needs_restart(item):
+    """A plan item the user would notice: a chat that's missing, or one whose copy here opens an
+    older part of the conversation. Title/time-only refreshes can wait for the next restore."""
+    sid, meta, out, cur = item
+    return cur is None or cur.get("cliSessionId") != out.get("cliSessionId")
+
+
+CHAT_BUSY_MS = 2 * 60 * 1000
+
+
+def chat_running(now_ms=None):
+    """A chat wrote to its transcript in the last 2 minutes: quitting Claude now would cut it off."""
+    now_ms = now_ms or int(time.time() * 1000)
+    newest = 0
+    if os.path.isdir(PROJECTS):
+        for proj in os.listdir(PROJECTS):
+            pdir = os.path.join(PROJECTS, proj)
+            if not os.path.isdir(pdir):
+                continue
+            for n in os.listdir(pdir):
+                if n.endswith(".jsonl"):
+                    try:
+                        newest = max(newest, int(os.path.getmtime(os.path.join(pdir, n)) * 1000))
+                    except OSError:
+                        pass
+    return now_ms - newest < CHAT_BUSY_MS
 
 
 def cmd_restore(args, vault=None):
@@ -785,7 +875,7 @@ def _restore(args, vault=None):
               + (T('（预演，未写入）', ' (dry run)') if args.dry_run else ''))
     if snap_dir and not args.target:
         write_json(os.path.join(snap_dir, "manifest.json"), {"written": manifest})
-        write_json(SEEN_FILE, current_seen())
+        write_seen()
     if linked:
         print(T(f"已为搬家的项目链接 {linked} 份 transcript", f"Linked {linked} transcript(s) for moved projects"))
     if not args.dry_run:
@@ -837,7 +927,7 @@ def _rollback(args):
                 deleted.pop(sid, None)
             write_json(DELETED_FILE, deleted)
         open(os.path.join(d, "rolled-back"), "w").close()
-        write_json(SEEN_FILE, current_seen())
+        write_seen()
         if untomb:
             print(T(f"已撤销：找回 {restored} 个被清理的会话。", f"Undone: brought back {restored} cleaned-up chat(s)."))
         else:
@@ -967,15 +1057,23 @@ def cmd_auto(args):
         if folders != state["folders"]:   # 有账号目录被删（退出登录）：记下即可
             write_json(STATE_FILE, {"lastAccount": acc, "folders": folders})
         return
-    acc_dirs = [d for d in account_dirs() if d[0] == acc]
+    _, acc_dirs = current_dirs()   # the folder Claude actually shows for this account
     if not acc_dirs:            # 新账号还没打开过 Code 标签页，下一分钟再看
         return
     if cfg["rebuild_orphans"]:
         rebuild_orphans(vault, cfg, verbose=False)
     transcripts = all_transcripts()
-    missing = max(len(plan_restore(vault, a, f, cfg, transcripts)) for a, _, f in acc_dirs)
-    write_json(STATE_FILE, {"lastAccount": acc, "folders": folders})
+    missing = max(sum(1 for item in plan_restore(vault, a, f, cfg, transcripts) if needs_restart(item))
+                  for a, _, f in acc_dirs)
     stamp = dt.datetime.now().strftime("%m-%d %H:%M")
+    if missing and not getattr(args, "no_open", False) and chat_running():
+        # restoring restarts Claude; never cut off a chat that is still answering. Check again next minute.
+        if state.get("waitingFor") != acc:
+            print(T(f"[{stamp}] 检测到换号，缺 {missing} 个对话；有对话正在进行，等它停下 2 分钟后再恢复",
+                    f"[{stamp}] Account switch, {missing} chat(s) missing; a chat is still running, restoring once it's idle"))
+        write_json(STATE_FILE, dict(state, waitingFor=acc))
+        return
+    write_json(STATE_FILE, {"lastAccount": acc, "folders": folders})
     print(T(f"[{stamp}] 检测到换号：{str(state.get('lastAccount'))[:8]}… -> {str(acc)[:8]}…，缺 {missing} 个对话",
             f"[{stamp}] Account switch: {str(state.get('lastAccount'))[:8]}… -> {str(acc)[:8]}…, {missing} chat(s) missing"))
     if missing and not getattr(args, "no_open", False):
