@@ -114,6 +114,9 @@ final class Model: ObservableObject {
     @Published var switchTarget: Usage.Account?
     @Published var showSwitchGuide = false
     @Published var autoRestore = true
+    @Published var notifySwitch = true
+    @Published var notifyQuota = true
+    @Published var quotaAlertAt = 90
     @Published var countdown: Int?            // seconds left before an automatic restore
     @Published var showAdPreview = false
     var countdownTask: Task<Void, Never>?
@@ -259,6 +262,29 @@ final class Model: ObservableObject {
         if r != rules { rules = r }
         let ar = cfg["auto_restore"] as? Bool ?? true
         if ar != autoRestore { autoRestore = ar }
+        let ns = cfg["notify_switch"] as? Bool ?? true
+        if ns != notifySwitch { notifySwitch = ns }
+        let nq = cfg["notify_quota"] as? Bool ?? true
+        if nq != notifyQuota { notifyQuota = nq }
+        let qa = cfg["quota_alert_at"] as? Int ?? 90
+        if qa != quotaAlertAt { quotaAlertAt = qa }
+    }
+
+    /// Write one key into the vault's config.json (the background job reads it every minute).
+    func saveSetting(_ key: String, _ value: Any) {
+        var cfg: [String: Any] = [:]
+        if let data = FileManager.default.contents(atPath: configPath),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { cfg = obj }
+        cfg[key] = value
+        if let out = try? JSONSerialization.data(withJSONObject: cfg, options: [.prettyPrinted, .sortedKeys]) {
+            try? out.write(to: URL(fileURLWithPath: configPath))
+        }
+        loadRules()
+    }
+
+    /// Send a sample notification so you can see what the reminders look like.
+    func testReminder() async {
+        _ = await python(["notify-test"])
     }
 
     func saveAutoRestore(_ on: Bool) {
@@ -788,20 +814,35 @@ struct ContentView: View {
 
     var sidebarStatus: some View {
         let on = m.status?.autoBackup ?? false
-        return HStack(spacing: 8) {
-            Circle().fill(on ? Color.green : Color.secondary).frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(on ? L("自动备份已开启", "Auto backup on") : L("自动备份已关闭", "Auto backup off"))
-                    .font(.caption.weight(.medium))
-                if on, let t = m.status?.lastBackupAt {
-                    Text(L("上次 ", "last ") + shortTime(t)).font(.caption2).foregroundStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 10) {
+            if let u = currentUsage {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L("当前账号", "Signed in")).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(u.title).font(.caption.weight(.medium)).lineLimit(1).truncationMode(.middle).help(u.title)
+                    HStack(spacing: 6) {
+                        Text("5h").font(.caption2).foregroundStyle(.secondary)
+                        Bar(value: u.fiveHour, estimated: u.fiveHourEstimated, width: 44)
+                        Text(L("周", "wk")).font(.caption2).foregroundStyle(.secondary)
+                        Bar(value: u.weekly, estimated: u.weeklyEstimated, width: 44)
+                    }
                 }
+                Divider()
             }
-            Spacer()
-            if m.busy { ProgressView().controlSize(.small) }
+            HStack(spacing: 8) {
+                Circle().fill(on ? Color.green : Color.secondary).frame(width: 7, height: 7)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(on ? L("自动备份 · 换号提醒开启", "Backup & reminders on") : L("后台任务已关闭", "Background job off"))
+                        .font(.caption.weight(.medium))
+                    if on, let t = m.status?.lastBackupAt {
+                        Text(L("上次 ", "last ") + shortTime(t)).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if m.busy { ProgressView().controlSize(.small) }
+            }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.05)))
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
     }
 
     func autoRestoreBanner(_ n: Int) -> some View {
@@ -851,65 +892,87 @@ struct ContentView: View {
     var currentUsage: Usage.Account? { m.usage?.accounts.first { $0.current } }
 
     var overviewPage: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 20) {
             PageHeader(title: L("概览", "Overview"),
                        subtitle: L("换号不丢对话，每个号的额度一眼看清", "Switch accounts without losing chats — see every account's usage at a glance")) {
                 refreshControl
             }
+            heroCard
+            accountsList
+            AdCard(m: m)
+            if !m.log.isEmpty { activityCard }
+        }
+    }
 
-            // current account
-            Card(padding: 18) {
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(alignment: .center, spacing: 14) {
-                        Avatar(name: currentUsage?.avatarText ?? "?", size: 48)
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Text(currentUsage?.title ?? (m.status?.currentAccount.map { String($0.prefix(8)) + "…" } ?? "—"))
-                                    .font(.system(size: 18, weight: .semibold)).lineLimit(1).truncationMode(.middle)
-                                    .textSelection(.enabled)
-                                Tag(text: L("当前登录", "Signed in"))
-                            }
-                            if let u = currentUsage {
-                                noteChip(u)
-                            } else {
-                                Text(L("登录后会自动记录邮箱", "Email is recorded after you sign in"))
-                                    .font(.callout).foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer()
+    /// The signed-in account: who, how much is left, when it resets, and the restore button.
+    var heroCard: some View {
+        Card(padding: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .center, spacing: 16) {
+                    Avatar(name: currentUsage?.avatarText ?? "?", size: 52)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(L("当前登录", "Signed in")).font(.caption.weight(.semibold)).foregroundStyle(brand)
+                        Text(currentUsage?.title ?? (m.status?.currentAccount.map { String($0.prefix(8)) + "…" } ?? "—"))
+                            .font(.system(size: 19, weight: .semibold)).lineLimit(1).truncationMode(.tail)
+                            .textSelection(.enabled)
                         if let u = currentUsage {
-                            miniGauge(L("5 小时", "5-hour"), u.fiveHour, u.fiveHourEstimated)
-                            miniGauge(L("每周", "Weekly"), u.weekly, u.weeklyEstimated)
+                            noteChip(u)
+                        } else {
+                            Text(L("登录后会自动记录邮箱", "Email is recorded after you sign in"))
+                                .font(.callout).foregroundStyle(.secondary)
                         }
                     }
+                    .layoutPriority(1)
+                    Spacer(minLength: 12)
                     if let u = currentUsage {
-                        VStack(alignment: .leading, spacing: 6) {
-                            resetLine(L("5 小时", "5-hour"), u.fiveHourReset,
-                                      u.fiveHour == nil ? L("暂无数据", "no data") : L("现在可用", "available now"))
-                            resetLine(L("每周", "Weekly"), u.weeklyReset, L("重置时间未知", "reset unknown"))
-                        }
-                    }
-                    Divider()
-                    HStack(spacing: 12) {
-                        let n = m.status?.accounts.first { $0.current }?.sessions ?? 0
-                        Label(L("侧边栏里有 \(n) 个对话", "\(n) chats in the sidebar"), systemImage: "bubble.left.and.bubble.right")
-                            .font(.callout).foregroundStyle(.secondary)
-                        Spacer()
-                        Button { m.confirmRestore = true } label: {
-                            Label(L("恢复所有对话", "Restore all chats"), systemImage: "arrow.down.circle")
-                                .padding(.horizontal, 4)
-                        }
-                        .buttonStyle(.borderedProminent).controlSize(.large)
-                        .disabled(m.busy || m.status == nil)
+                        miniGauge(L("5 小时", "5-hour"), u.fiveHour, u.fiveHourEstimated)
+                        miniGauge(L("每周", "Weekly"), u.weekly, u.weeklyEstimated)
                     }
                 }
+                .padding(20)
+                if let u = currentUsage {
+                    VStack(alignment: .leading, spacing: 6) {
+                        resetLine(L("5 小时", "5-hour"), u.fiveHourReset,
+                                  u.fiveHour == nil ? L("暂无数据", "no data") : L("现在可用", "available now"))
+                        resetLine(L("每周", "Weekly"), u.weeklyReset, L("重置时间未知", "reset unknown"))
+                    }
+                    .padding(.horizontal, 20).padding(.bottom, 16)
+                }
+                Divider()
+                HStack(spacing: 18) {
+                    let n = m.status?.accounts.first { $0.current }?.sessions ?? 0
+                    footStat("bubble.left.and.bubble.right", "\(n)", L("侧边栏对话", "in sidebar"))
+                    footStat("tray.full", "\(m.status?.vaultSessions ?? 0)", L("已备份", "backed up"))
+                    footStat("internaldrive", ByteCountFormatter.string(fromByteCount: Int64(m.status?.vaultBytes ?? 0), countStyle: .file),
+                             L("占用", "on disk"))
+                    Spacer()
+                    Button { m.confirmRestore = true } label: {
+                        Label(L("恢复所有对话", "Restore all chats"), systemImage: "arrow.down.circle").padding(.horizontal, 4)
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+                    .disabled(m.busy || m.status == nil)
+                }
+                .padding(.horizontal, 20).padding(.vertical, 14)
+                .background(Color.primary.opacity(0.025))
             }
+        }
+    }
 
-            // all accounts at a glance
+    func footStat(_ icon: String, _ value: String, _ label: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).font(.caption).foregroundStyle(brand)
+            Text(value).font(.callout.weight(.semibold).monospacedDigit())
+            Text(label).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Every account on one card: full email, note, both limits, and Switch.
+    var accountsList: some View {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(L("账号一览", "All accounts")).font(.headline)
+                Text(L("所有账号", "All accounts")).font(.headline)
                 Spacer()
-                Button(L("查看额度详情", "Usage details")) { m.page = .usage }.buttonStyle(.borderless)
+                Button(L("额度详情 →", "Usage details →")) { m.page = .usage }.buttonStyle(.borderless)
             }
             Card(padding: 0) {
                 VStack(spacing: 0) {
@@ -917,64 +980,71 @@ struct ContentView: View {
                     if list.isEmpty {
                         Text(L("还没有额度记录。在 Claude 里打开一次 Code 标签页后点刷新。", "No usage yet. Open the Code tab in Claude once."))
                             .font(.callout).foregroundStyle(.secondary).padding(16)
+                    } else {
+                        HStack(spacing: 12) {
+                            Text(L("账号", "Account")).frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 42)
+                            Text(L("5 小时", "5-hour")).frame(width: 104, alignment: .leading)
+                            Text(L("每周", "Weekly")).frame(width: 104, alignment: .leading)
+                            Color.clear.frame(width: 56, height: 1)
+                        }
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 6)
+                        Divider()
                     }
                     ForEach(Array(list.enumerated()), id: \.element.id) { i, a in
                         if i > 0 { Divider().padding(.leading, 58) }
-                        HStack(spacing: 12) {
-                            Avatar(name: a.avatarText, size: 30)
-                            VStack(alignment: .leading, spacing: 1) {
-                                HStack(spacing: 6) {
-                                    Text(a.title).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
-                                    if let n = a.note {
-                                        Text(n).font(.caption2.weight(.medium)).foregroundStyle(brand)
-                                            .padding(.horizontal, 5).padding(.vertical, 1)
-                                            .background(Capsule().fill(brand.opacity(0.12)))
-                                    }
-                                    if a.current { Tag(text: L("当前", "Current")) }
-                                }
-                                Text(a.email == nil ? a.subtitle
-                                     : (a.weeklyReset.map { L("每周 \($0.when) 重置", "weekly resets \($0.when)") } ?? L("每周重置时间未知", "weekly reset unknown")))
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                            }
-                            Spacer()
-                            compactBar(L("5h", "5h"), a.fiveHour, a.fiveHourEstimated)
-                            compactBar(L("周", "Wk"), a.weekly, a.weeklyEstimated)
-                            Group {
-                                if a.current {
-                                    Color.clear
-                                } else {
-                                    Button(L("切换", "Switch")) { m.switchTo(a) }.controlSize(.small)
-                                }
-                            }
-                            .frame(width: 52)
-                        }
-                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        accountRow(a)
                     }
                 }
             }
+        }
+    }
 
-            // stats
-            HStack(spacing: 12) {
-                statTile(L("已备份对话", "Chats in vault"), "\(m.status?.vaultSessions ?? 0)", "tray.full")
-                statTile(L("账号", "Accounts"), "\(m.usage?.accounts.count ?? m.status?.orgCount ?? 0)", "person.2")
-                statTile(L("备份占用", "Vault size"),
-                         ByteCountFormatter.string(fromByteCount: Int64(m.status?.vaultBytes ?? 0), countStyle: .file), "internaldrive")
-            }
-
-            AdCard(m: m)
-
-            if !m.log.isEmpty {
-                Card {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(L("活动记录", "Activity")).font(.headline)
-                            Spacer()
-                            Button(L("清空", "Clear")) { m.log = "" }.buttonStyle(.borderless).font(.caption)
-                        }
-                        Text(m.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+    func accountRow(_ a: Usage.Account) -> some View {
+        HStack(spacing: 12) {
+            Avatar(name: a.avatarText, size: 30)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(a.title).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.tail)
+                        .textSelection(.enabled)
+                    if a.current { Tag(text: L("当前", "Current")) }
                 }
+                HStack(spacing: 4) {
+                    if let n = a.note {
+                        Text(n).font(.caption.weight(.medium)).foregroundStyle(brand)
+                        Text("·").font(.caption).foregroundStyle(.tertiary)
+                    }
+                    Text(a.email == nil ? a.subtitle
+                         : (a.weeklyReset.map { L("每周 \($0.when) 重置", "weekly resets \($0.when)") } ?? L("每周重置时间未知", "weekly reset unknown")))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            compactBar(a.fiveHour, a.fiveHourEstimated)
+            compactBar(a.weekly, a.weeklyEstimated)
+            Group {
+                if a.current {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(brand)
+                } else {
+                    Button(L("切换", "Switch")) { m.switchTo(a) }.controlSize(.small)
+                }
+            }
+            .frame(width: 56)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 11)
+        .background(a.current ? brand.opacity(0.05) : .clear)
+    }
+
+    var activityCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(L("活动记录", "Activity")).font(.headline)
+                    Spacer()
+                    Button(L("清空", "Clear")) { m.log = "" }.buttonStyle(.borderless).font(.caption)
+                }
+                Text(m.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -995,27 +1065,13 @@ struct ContentView: View {
         }
     }
 
-    func compactBar(_ label: String, _ v: Int?, _ est: Bool) -> some View {
-        HStack(spacing: 6) {
-            Text(label).font(.caption2).foregroundStyle(.secondary).frame(width: 18, alignment: .trailing)
-            Bar(value: v, estimated: est, width: 70)
+    func compactBar(_ v: Int?, _ est: Bool) -> some View {
+        HStack(spacing: 8) {
+            Bar(value: v, estimated: est, width: 58)
             Text(v.map { "\($0)%" } ?? "—").font(.caption.monospacedDigit())
-                .foregroundStyle(est ? .secondary : .primary).frame(width: 36, alignment: .trailing)
+                .foregroundStyle(est || v == nil ? .secondary : .primary).frame(width: 36, alignment: .leading)
         }
-    }
-
-    func statTile(_ title: String, _ value: String, _ icon: String) -> some View {
-        Card(padding: 14) {
-            HStack(spacing: 12) {
-                Image(systemName: icon).font(.system(size: 15)).foregroundStyle(brand)
-                    .frame(width: 32, height: 32)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(brand.opacity(0.10)))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(value).font(.system(size: 17, weight: .semibold, design: .rounded))
-                    Text(title).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-        }
+        .frame(width: 104, alignment: .leading)
     }
 
     // MARK: usage
@@ -1028,7 +1084,8 @@ struct ContentView: View {
             }
             if let u = m.usage, !u.accounts.isEmpty {
                 if let ex = u.exact, ex.enabled { exactBanner(ex, u) }
-                VStack(spacing: 12) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 14, alignment: .top)],
+                          alignment: .leading, spacing: 14) {
                     ForEach(u.accounts) { a in usageCard(a) }
                 }
                 Label(L("数据来自 Claude 在本机的记录，不联网、不读取 token：用量来自 Claude App；邮箱和精确的重置时间来自 Claude Code 的对话记录。标「精确」的是 Claude 自己给出的时间，标「估计」的是推算的。只有当前登录的账号会更新用量。",
@@ -1071,52 +1128,46 @@ struct ContentView: View {
 
     func usageCard(_ a: Usage.Account) -> some View {
         Card(padding: 16) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 10) {
-                    Avatar(name: a.avatarText, size: 36)
-                    VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 10) {
+                    Avatar(name: a.avatarText, size: 34)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(a.title).font(.system(size: 13.5, weight: .semibold)).lineLimit(1).truncationMode(.tail)
+                            .textSelection(.enabled).help(a.title)
                         HStack(spacing: 6) {
-                            Text(a.title).font(.system(size: 14, weight: .semibold)).lineLimit(1).truncationMode(.middle)
-                                .textSelection(.enabled)
                             if a.current { Tag(text: L("当前登录", "Signed in")) }
+                            noteChip(a)
                         }
-                        noteChip(a)
                     }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 6) {
-                        if !a.current {
-                            Button { m.switchTo(a) } label: {
-                                Label(L("切换到这个号", "Switch to this"), systemImage: "arrow.left.arrow.right")
-                            }
-                            .controlSize(.small)
-                        }
-                        Text(a.updatedAt > 0 ? L("Claude 记录于 ", "recorded ") + shortTime(a.updatedAt) : L("暂无用量记录", "no usage yet"))
-                            .font(.caption2).foregroundStyle(.tertiary)
+                    Spacer(minLength: 4)
+                    if !a.current {
+                        Button { m.switchTo(a) } label: { Image(systemName: "arrow.left.arrow.right") }
+                            .controlSize(.small).help(L("切换到这个号", "Switch to this account"))
                     }
                 }
-                HStack(alignment: .top, spacing: 14) {
-                    limitBlock(L("5 小时额度", "5-hour limit"), a.fiveHour, a.fiveHourEstimated, a.fiveHourReset,
-                               resetWord: L("下次恢复", "Resets"),
-                               idle: a.fiveHour == nil ? L("暂无数据", "no data")
-                                   : L("现在可用 · 开始使用后 5 小时内恢复", "Available · resets 5 h after you start"))
-                    limitBlock(L("每周额度", "Weekly limit"), a.weekly, a.weeklyEstimated, a.weeklyReset,
-                               resetWord: L("下次重置", "Resets"),
-                               idle: a.weekly == nil ? L("暂无数据", "no data")
-                                   : L("重置时间未知 · 碰到一次每周限额后就能算准", "Reset time unknown until the weekly limit is hit once"))
-                }
+                limitBlock(L("5 小时额度", "5-hour limit"), a.fiveHour, a.fiveHourEstimated, a.fiveHourReset,
+                           resetWord: L("下次恢复", "Resets"),
+                           idle: a.fiveHour == nil ? L("暂无数据", "no data")
+                               : L("现在可用 · 开始使用后 5 小时内恢复", "Available · resets 5 h after you start"))
+                limitBlock(L("每周额度", "Weekly limit"), a.weekly, a.weeklyEstimated, a.weeklyReset,
+                           resetWord: L("下次重置", "Resets"),
+                           idle: a.weekly == nil ? L("暂无数据", "no data")
+                               : L("重置时间未知 · 碰到一次每周限额后就能算准", "Reset time unknown until the weekly limit is hit once"))
+                Text(a.updatedAt > 0 ? L("Claude 记录于 ", "Recorded ") + shortTime(a.updatedAt) : L("暂无用量记录", "No usage yet"))
+                    .font(.caption2).foregroundStyle(.tertiary)
             }
         }
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
             .stroke(a.current ? brand.opacity(0.45) : .clear, lineWidth: 1.5))
     }
 
     func limitBlock(_ title: String, _ v: Int?, _ est: Bool, _ r: Usage.Reset?, resetWord: String, idle: String) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title).font(.callout.weight(.medium))
                 Spacer()
                 Text(v.map { "\($0)%" } ?? "—")
-                    .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
+                    .font(.system(size: 18, weight: .bold, design: .rounded).monospacedDigit())
                     .foregroundStyle(v == nil ? .secondary : (est ? .secondary : usageColor(v)))
             }
             GeometryReader { g in
@@ -1126,7 +1177,7 @@ struct ContentView: View {
                         .frame(width: v == nil ? 0 : max(6, g.size.width * min(max(Double(v ?? 0) / 100, 0), 1)))
                 }
             }
-            .frame(height: 7)
+            .frame(height: 6)
             if let r = r {
                 HStack(spacing: 6) {
                     Text("\(resetWord) \(r.when)").font(.caption.weight(.medium))
@@ -1141,7 +1192,7 @@ struct ContentView: View {
                 Text(idle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.035)))
     }
@@ -1245,6 +1296,35 @@ struct ContentView: View {
         }
     }
 
+    var remindersCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                switchRow(L("换号提醒", "Account switch reminder"),
+                          L("一换号就弹系统通知：现在是哪个邮箱、对话要不要恢复、这个号的额度用了多少。",
+                            "A system notification as soon as you switch: which email you're on, whether chats need restoring, and how much of its limits is used."),
+                          Binding(get: { m.notifySwitch }, set: { m.saveSetting("notify_switch", $0) }))
+                Divider()
+                switchRow(L("额度提醒", "Usage reminder"),
+                          L("当前账号的 5 小时或每周额度用到 \(m.quotaAlertAt)% 时提醒一次，并告诉你什么时候恢复。",
+                            "Tells you once when the signed-in account reaches \(m.quotaAlertAt)% of its 5-hour or weekly limit, and when it resets."),
+                          Binding(get: { m.notifyQuota }, set: { m.saveSetting("notify_quota", $0) }))
+                if m.notifyQuota {
+                    Stepper(value: Binding(get: { m.quotaAlertAt }, set: { m.saveSetting("quota_alert_at", $0) }), in: 50...99, step: 5) {
+                        Text(L("提醒阈值：\(m.quotaAlertAt)%", "Remind at \(m.quotaAlertAt)%")).font(.callout)
+                    }
+                }
+                Divider()
+                HStack {
+                    Text(L("提醒由后台任务发出，换号助手不用开着。第一次会请求通知权限。",
+                           "The background job sends them — this app doesn't need to be open. macOS may ask to allow notifications once."))
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button(L("发一条试试", "Send a test")) { Task { await m.testReminder() } }
+                }
+            }
+        }
+    }
+
     var exactModeCard: some View {
         let ex = m.usage?.exact
         let on = ex?.enabled ?? false
@@ -1322,7 +1402,9 @@ struct ContentView: View {
             guideCard("2", L("换号：三步", "Switching accounts: three steps"), [
                 L("在「额度」或「概览」里，对要换的号点「切换」，邮箱会自动复制。", "In Usage or Overview, click Switch on the account you want — its email is copied for you."),
                 L("在 Claude 左下角点头像 → 退出登录，再用这个邮箱登录，打开一次 Code 标签页。", "In Claude: avatar (bottom left) → Log out, sign in with that email, open the Code tab once."),
-                L("一分钟内会自动倒数 10 秒，把之前的对话恢复到这个号；想停下就点「取消」。", "Within a minute your chats are restored automatically after a 10-second countdown — Cancel stops it."),
+                L("一分钟内会弹出系统通知告诉你换到了哪个号、额度用了多少，然后倒数 10 秒把之前的对话恢复到这个号；想停下就点「取消」。如果有对话正在回复，会等它结束再恢复。",
+                  "Within a minute a notification tells you which account you're on and how much of it is used, then your chats are restored after a 10-second countdown — Cancel stops it. A chat that's still answering is never cut off."),
+                L("额度用到 90% 时也会提醒一次（可以在「设置 → 提醒」里调整或关闭）。", "You're also told once when a limit reaches 90% (change or turn off in Settings → Reminders)."),
             ])
             guideCard("3", L("额度怎么看", "Reading the usage"), [
                 L("百分比来自 Claude App 自己的记录。Claude 通常在你使用或打开它的「用量」面板时更新记录，所以没登录的号显示的是上次登录时的情况。",
@@ -1371,14 +1453,16 @@ struct ContentView: View {
                             "After a switch, restores on its own after a 10-second countdown (Claude restarts); you can cancel. Off: ask first."),
                           Binding(get: { m.autoRestore }, set: { m.saveAutoRestore($0) }))
                 Divider()
-                switchRow(L("自动备份 + 换号提醒", "Auto backup + switch alert"),
-                          L("每分钟备份一次对话列表和额度记录；发现换号会弹窗提醒。",
-                            "Backs up chat lists and usage every minute; prompts you after an account switch."),
+                switchRow(L("后台任务（自动备份 + 换号检测）", "Background job (backup + switch detection)"),
+                          L("每分钟备份一次对话列表和额度记录，并检测换号。关掉后不会自动恢复，也不会有提醒。",
+                            "Backs up chat lists and usage every minute and watches for switches. Off: no automatic restore and no reminders."),
                           Binding(get: { s?.autoBackup ?? false }, set: { on in
                               Task { await m.run([on ? "install-agent" : "uninstall-agent"]) }
                           }))
                 }
             }
+            Text(L("提醒", "Reminders")).font(.headline).padding(.top, 2)
+            remindersCard
             exactModeCard
             Card {
                 HStack(spacing: 12) {

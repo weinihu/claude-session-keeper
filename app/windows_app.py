@@ -150,6 +150,54 @@ def core_json(args):
         return None
 
 
+# ------------------------------------------------------------------ Claude process (Windows)
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def claude_running():
+    if os.name != "nt":
+        return False
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq claude.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "claude.exe" in out.lower()
+
+
+def claude_exe_path():
+    """Where the running Claude lives, so we can reopen the same one afterwards."""
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                              "(Get-Process claude -ErrorAction SilentlyContinue | Select-Object -First 1).Path"],
+                             capture_output=True, text=True, timeout=15, creationflags=NO_WINDOW).stdout.strip()
+        if out and os.path.isfile(out):
+            return out
+    except (OSError, subprocess.SubprocessError):
+        pass
+    local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    for cand in (os.path.join(local, "AnthropicClaude", "claude.exe"), os.path.join(local, "Programs", "Claude", "Claude.exe")):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def stop_claude(force=False, wait=12):
+    """Ask Claude to close (force=True ends it). Returns True once it's gone."""
+    args = ["taskkill", "/IM", "claude.exe", "/T"] + (["/F"] if force else [])
+    try:
+        subprocess.run(args, capture_output=True, timeout=15, creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    end = time.time() + wait
+    while time.time() < end:
+        if not claude_running():
+            time.sleep(1.5)                     # let it finish writing its files
+            return True
+        time.sleep(0.5)
+    return not claude_running()
+
+
 # ------------------------------------------------------------------ small widgets
 def card(parent, **kw):
     f = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1, **kw)
@@ -359,14 +407,30 @@ class App:
 
         foot = tk.Frame(self.sidebar, bg="#E7E1DB")
         foot.pack(side="bottom", fill="x", padx=12, pady=12)
+        cur = next((a for a in self.accounts() if a.get("current")), None)
+        if cur:
+            box = tk.Frame(foot, bg=foot["bg"])
+            box.pack(fill="x", padx=10, pady=(10, 0))
+            label(box, tr("当前账号", "Signed in"), 8, "bold", color=MUTED, bg=foot["bg"]).pack(anchor="w")
+            name = self.title_of(cur)
+            label(box, name if len(name) <= 26 else name[:12] + "…" + name[-12:], 9, bg=foot["bg"]).pack(anchor="w")
+            bars = tk.Frame(box, bg=foot["bg"])
+            bars.pack(anchor="w", pady=(3, 0))
+            for lab, v, est in (("5h", cur.get("fiveHour"), cur.get("fiveHourEstimated")),
+                                (tr("周", "wk"), cur.get("weekly"), cur.get("weeklyEstimated"))):
+                label(bars, lab, 8, color=MUTED, bg=foot["bg"]).pack(side="left", padx=(0, 4))
+                bar(bars, v, 46, est, bg=foot["bg"]).pack(side="left", padx=(0, 8))
+            tk.Frame(foot, bg=BORDER, height=1).pack(fill="x", padx=10, pady=(8, 0))
+        st = tk.Frame(foot, bg=foot["bg"])
+        st.pack(fill="x")
         on = bool(self.status.get("autoBackup"))
-        dot = tk.Canvas(foot, width=8, height=8, bg=foot["bg"], highlightthickness=0)
+        dot = tk.Canvas(st, width=8, height=8, bg=foot["bg"], highlightthickness=0)
         dot.create_oval(0, 0, 8, 8, fill="#4CB561" if on else FAINT, outline="")
         dot.pack(side="left", padx=(10, 6), pady=10)
-        txt = tr("自动备份已开启", "Auto backup on") if on else tr("自动备份已关闭", "Auto backup off")
+        txt = tr("自动备份 · 换号提醒开启", "Backup & reminders on") if on else tr("后台任务已关闭", "Background job off")
         if self.busy:
             txt = tr("处理中…", "Working…")
-        label(foot, txt, 9, bg=foot["bg"]).pack(side="left", pady=10)
+        label(st, txt, 9, bg=foot["bg"]).pack(side="left", pady=10)
 
     def go(self, key):
         self.page = key
@@ -426,37 +490,60 @@ class App:
                     tr("换号不丢对话，每个号的额度一眼看清", "Switch accounts without losing chats — see every account's usage"),
                     (tr("⟳ 刷新", "⟳ Refresh"), self.refresh))
         cur = next((a for a in self.accounts() if a.get("current")), None)
+
+        # signed-in account
         c = card(p)
         c.pack(fill="x")
         top = tk.Frame(c, bg=CARD)
-        top.pack(fill="x", padx=18, pady=(16, 12))
-        avatar(top, "?" if not cur or (not cur.get("email") and not cur.get("named")) else self.title_of(cur), 48).pack(side="left")
+        top.pack(fill="x", padx=20, pady=(18, 10))
+        avatar(top, "?" if not cur or (not cur.get("email") and not cur.get("named")) else self.title_of(cur), 52).pack(side="left")
         info = tk.Frame(top, bg=CARD)
-        info.pack(side="left", padx=12)
-        row = tk.Frame(info, bg=CARD)
-        row.pack(anchor="w")
-        label(row, self.title_of(cur) if cur else (str(self.status.get("currentAccount") or "—")[:8]), 14, "bold").pack(side="left")
-        tag(row, tr("当前登录", "Signed in")).pack(side="left", padx=8)
-        label(info, (cur.get("email") if cur and cur.get("named") else (self.sub_of(cur) if cur else
-              tr("登录后会自动记录邮箱", "Email is recorded after you sign in"))), 10, color=MUTED).pack(anchor="w")
+        info.pack(side="left", padx=14)
+        label(info, tr("当前登录", "Signed in"), 9, "bold", color=BRAND).pack(anchor="w")
+        label(info, self.title_of(cur) if cur else (str(self.status.get("currentAccount") or "—")[:8]), 15, "bold").pack(anchor="w")
+        if cur:
+            note = label(info, ("🏷 " + cur["name"]) if cur.get("named") else tr("＋ 备注", "＋ Note"), 9,
+                         color=BRAND if cur.get("named") else MUTED, cursor="hand2")
+            note.pack(anchor="w", pady=(2, 0))
+            note.bind("<Button-1>", lambda e, acc=cur: self.rename(acc))
+        else:
+            label(info, tr("登录后会自动记录邮箱", "Email is recorded after you sign in"), 10, color=MUTED).pack(anchor="w")
         if cur:
             for lab, v, est in ((tr("每周", "Weekly"), cur.get("weekly"), cur.get("weeklyEstimated")),
                                 (tr("5 小时", "5-hour"), cur.get("fiveHour"), cur.get("fiveHourEstimated"))):
                 g = tk.Frame(top, bg=CARD)
                 g.pack(side="right", padx=6)
-                ring(g, v, 56, 6, est).pack()
+                ring(g, v, 58, 6, est).pack()
                 label(g, lab, 8, color=MUTED).pack()
-        tk.Frame(c, bg=BORDER, height=1).pack(fill="x", padx=18)
-        bot = tk.Frame(c, bg=CARD)
-        bot.pack(fill="x", padx=18, pady=12)
+            resets = tk.Frame(c, bg=CARD)
+            resets.pack(fill="x", padx=20, pady=(0, 14))
+            for lab, r, idle in ((tr("5 小时", "5-hour"), cur.get("fiveHourReset"),
+                                  tr("现在可用", "available now") if cur.get("fiveHour") is not None else tr("暂无数据", "no data")),
+                                 (tr("每周", "Weekly"), cur.get("weeklyReset"), tr("重置时间未知", "reset unknown"))):
+                line = tk.Frame(resets, bg=CARD)
+                line.pack(anchor="w")
+                label(line, "↻ " + lab, 9, "bold", color=TEXT).pack(side="left")
+                txt = (f"{r['when']} · {r['week']} · {r['in']}" + ("" if r.get("exact") else tr("（估计）", " (est.)"))) if r else idle
+                label(line, "  " + txt, 9, color=MUTED).pack(side="left")
+        foot = tk.Frame(c, bg="#FAF8F6")
+        foot.pack(fill="x")
+        tk.Frame(foot, bg=BORDER, height=1).pack(fill="x")
+        fr = tk.Frame(foot, bg="#FAF8F6")
+        fr.pack(fill="x", padx=20, pady=12)
         n = next((x.get("sessions", 0) for x in self.status.get("accounts", []) if x.get("current")), 0)
-        label(bot, tr(f"侧边栏里有 {n} 个对话", f"{n} chats in the sidebar"), 10, color=MUTED).pack(side="left")
-        button(bot, tr("恢复所有对话", "Restore all chats"), self.restore, primary=True).pack(side="right")
+        size = self.status.get("vaultBytes", 0)
+        human = f"{size / 1e6:.1f} MB" if size >= 1e6 else f"{size / 1e3:.0f} KB"
+        for val, lab in ((n, tr("侧边栏对话", "in sidebar")), (self.status.get("vaultSessions", 0), tr("已备份", "backed up")),
+                         (human, tr("占用", "on disk"))):
+            label(fr, str(val), 11, "bold", bg="#FAF8F6").pack(side="left")
+            label(fr, " " + lab, 9, color=MUTED, bg="#FAF8F6").pack(side="left", padx=(0, 18))
+        button(fr, tr("⬇ 恢复所有对话", "⬇ Restore all chats"), self.restore, primary=True, bg="#FAF8F6").pack(side="right")
 
+        # every account
         h = tk.Frame(p, bg=BG)
-        h.pack(fill="x", pady=(20, 8))
-        label(h, tr("账号一览", "All accounts"), 12, "bold", bg=BG).pack(side="left")
-        lk = label(h, tr("查看额度详情 ›", "Usage details ›"), 10, color=BRAND, bg=BG, cursor="hand2")
+        h.pack(fill="x", pady=(22, 8))
+        label(h, tr("所有账号", "All accounts"), 12, "bold", bg=BG).pack(side="left")
+        lk = label(h, tr("额度详情 →", "Usage details →"), 10, color=BRAND, bg=BG, cursor="hand2")
         lk.pack(side="right")
         lk.bind("<Button-1>", lambda e: self.go("usage"))
         lst = card(p)
@@ -464,44 +551,47 @@ class App:
         if not self.accounts():
             label(lst, tr("还没有额度记录。在 Claude 里打开一次 Code 标签页后再看。", "No usage yet. Open the Code tab in Claude once."),
                   10, color=MUTED).pack(anchor="w", padx=16, pady=14)
+        else:
+            hd = tk.Frame(lst, bg=CARD)
+            hd.pack(fill="x", padx=16, pady=(10, 4))
+            self._account_grid(hd)
+            label(hd, tr("账号", "Account"), 8, "bold", color=MUTED).grid(row=0, column=1, sticky="w")
+            label(hd, tr("5 小时", "5-hour"), 8, "bold", color=MUTED).grid(row=0, column=2, sticky="w")
+            label(hd, tr("每周", "Weekly"), 8, "bold", color=MUTED).grid(row=0, column=3, sticky="w")
+            tk.Frame(lst, bg=BORDER, height=1).pack(fill="x")
         for i, a in enumerate(self.accounts()):
             if i:
                 tk.Frame(lst, bg=BORDER, height=1).pack(fill="x", padx=(58, 0))
-            r = tk.Frame(lst, bg=CARD)
-            r.pack(fill="x", padx=14, pady=9)
-            avatar(r, "?" if not a.get("email") and not a.get("named") else self.title_of(a), 30).pack(side="left")
-            t = tk.Frame(r, bg=CARD)
-            t.pack(side="left", padx=10)
-            tr_ = tk.Frame(t, bg=CARD)
-            tr_.pack(anchor="w")
-            label(tr_, self.title_of(a), 10, "bold").pack(side="left")
+            rowbg = "#FEF6F2" if a.get("current") else CARD
+            r = tk.Frame(lst, bg=rowbg)
+            r.pack(fill="x")
+            g = tk.Frame(r, bg=rowbg)
+            g.pack(fill="x", padx=16, pady=9)
+            self._account_grid(g)
+            avatar(g, "?" if not a.get("email") and not a.get("named") else self.title_of(a), 30, bg=rowbg).grid(row=0, column=0, rowspan=2, sticky="w")
+            line = tk.Frame(g, bg=rowbg)
+            line.grid(row=0, column=1, sticky="w")
+            label(line, self.title_of(a), 10, "bold", bg=rowbg).pack(side="left")
             if a.get("current"):
-                tag(tr_, tr("当前", "Current")).pack(side="left", padx=6)
-            label(t, self.sub_of(a), 9, color=BRAND if a.get("named") else MUTED).pack(anchor="w")
-            sw = tk.Frame(r, bg=CARD, width=64, height=34)
-            sw.pack(side="right", padx=(12, 0))
-            sw.pack_propagate(False)            # same width with or without the button, so bars line up
-            if not a.get("current"):
-                button(sw, tr("切换", "Switch"), lambda acc=a: self.switch_to(acc)).pack()
-            for lab, v, est in ((tr("周", "Wk"), a.get("weekly"), a.get("weeklyEstimated")),
-                                ("5h", a.get("fiveHour"), a.get("fiveHourEstimated"))):
-                f = tk.Frame(r, bg=CARD)
-                f.pack(side="right", padx=(14, 0))
-                label(f, lab, 8, color=MUTED).pack(side="left", padx=(0, 6))
-                bar(f, v, 70, est).pack(side="left")
-                label(f, "—" if v is None else f"{v}%", 9, width=5).pack(side="left", padx=(6, 0))
-
-        stats = tk.Frame(p, bg=BG)
-        stats.pack(fill="x", pady=(16, 0))
-        size = self.status.get("vaultBytes", 0)
-        human = f"{size / 1e6:.1f} MB" if size >= 1e6 else f"{size / 1e3:.0f} KB"
-        for i, (val, lab) in enumerate(((self.status.get("vaultSessions", 0), tr("已备份对话", "Chats in vault")),
-                                        (len(self.accounts()) or self.status.get("orgCount", 0), tr("账号", "Accounts")),
-                                        (human, tr("备份占用", "Vault size")))):
-            s = card(stats)
-            s.pack(side="left", fill="x", expand=True, padx=(0 if i == 0 else 10, 0))
-            label(s, str(val), 15, "bold").pack(anchor="w", padx=14, pady=(10, 0))
-            label(s, lab, 9, color=MUTED).pack(anchor="w", padx=14, pady=(0, 10))
+                tag(line, tr("当前", "Current")).pack(side="left", padx=6)
+            sub = []
+            if a.get("named") and a.get("email"):
+                sub.append(a["name"])
+            r_w = a.get("weeklyReset")
+            sub.append(self.sub_of(a) if not a.get("email") else
+                       (tr(f"每周 {r_w['when']} 重置", f"weekly resets {r_w['when']}") if r_w else tr("每周重置时间未知", "weekly reset unknown")))
+            label(g, " · ".join(sub), 9, color=MUTED, bg=rowbg).grid(row=1, column=1, sticky="w")
+            for col, (v, est) in ((2, (a.get("fiveHour"), a.get("fiveHourEstimated"))), (3, (a.get("weekly"), a.get("weeklyEstimated")))):
+                f = tk.Frame(g, bg=rowbg)
+                f.grid(row=0, column=col, rowspan=2, sticky="w")
+                bar(f, v, 60, est, bg=rowbg).pack(side="left")
+                label(f, "—" if v is None else f"{v}%", 9, bg=rowbg, color=MUTED if (v is None or est) else TEXT).pack(side="left", padx=(6, 0))
+            sw = tk.Frame(g, bg=rowbg)
+            sw.grid(row=0, column=4, rowspan=2, sticky="e")
+            if a.get("current"):
+                label(sw, "✓", 12, "bold", color=BRAND, bg=rowbg).pack()
+            else:
+                button(sw, tr("切换", "Switch"), lambda acc=a: self.switch_to(acc), bg=rowbg).pack()
 
         self.ad_card(p)
         if self.log_lines:
@@ -509,6 +599,68 @@ class App:
             lg.pack(fill="x", pady=(16, 0))
             label(lg, tr("活动记录", "Activity"), 11, "bold").pack(anchor="w", padx=16, pady=(12, 4))
             label(lg, "\n".join(self.log_lines[-8:]), 9, color=MUTED, wraplength=640).pack(anchor="w", padx=16, pady=(0, 12))
+
+    @staticmethod
+    def _account_grid(g):
+        """Same column widths for the header and every row, so the bars line up."""
+        g.columnconfigure(0, minsize=42)
+        g.columnconfigure(1, weight=1)
+        g.columnconfigure(2, minsize=120)
+        g.columnconfigure(3, minsize=120)
+        g.columnconfigure(4, minsize=70)
+
+    def usage_card(self, parent, a):
+        cur = a.get("current")
+        c = tk.Frame(parent, bg=CARD, highlightbackground=BRAND if cur else BORDER, highlightthickness=2 if cur else 1)
+        top = tk.Frame(c, bg=CARD)
+        top.pack(fill="x", padx=14, pady=(12, 8))
+        avatar(top, "?" if not a.get("email") and not a.get("named") else self.title_of(a), 34).pack(side="left", anchor="n")
+        t = tk.Frame(top, bg=CARD)
+        t.pack(side="left", padx=10, fill="x", expand=True)
+        label(t, self.title_of(a), 10, "bold").pack(anchor="w")
+        chips = tk.Frame(t, bg=CARD)
+        chips.pack(anchor="w", pady=(2, 0))
+        if cur:
+            tag(chips, tr("当前登录", "Signed in")).pack(side="left", padx=(0, 6))
+        note = tk.Label(chips, text=("🏷 " + a["name"]) if a.get("named") else tr("＋ 备注", "＋ Note"), font=font(8),
+                        fg=BRAND if a.get("named") else MUTED, bg=BRAND_SOFT if a.get("named") else "#F1EDE9",
+                        padx=6, pady=1, cursor="hand2")
+        note.pack(side="left")
+        note.bind("<Button-1>", lambda e, acc=a: self.rename(acc))
+        if not cur:
+            button(top, "⇄", lambda acc=a: self.switch_to(acc)).pack(side="right", anchor="n")
+        specs = [
+            (tr("5 小时额度", "5-hour limit"), a.get("fiveHour"), a.get("fiveHourEstimated"), a.get("fiveHourReset"),
+             tr("下次恢复", "Resets"),
+             tr("现在可用 · 开始使用后 5 小时内恢复", "Available · resets 5 h after you start")
+             if a.get("fiveHour") is not None else tr("暂无数据", "no data")),
+            (tr("每周额度", "Weekly limit"), a.get("weekly"), a.get("weeklyEstimated"), a.get("weeklyReset"),
+             tr("下次重置", "Resets"),
+             tr("重置时间未知 · 碰到一次每周限额后就能算准", "Unknown until the weekly limit is hit once")
+             if a.get("weekly") is not None else tr("暂无数据", "no data")),
+        ]
+        for title, v, est, r, word, idle in specs:
+            b = tk.Frame(c, bg="#F8F6F4")
+            b.pack(fill="x", padx=14, pady=(0, 8))
+            head = tk.Frame(b, bg="#F8F6F4")
+            head.pack(fill="x", padx=10, pady=(8, 4))
+            label(head, title, 9, "bold", bg="#F8F6F4").pack(side="left")
+            label(head, "—" if v is None else f"{v}%", 14, "bold", bg="#F8F6F4",
+                  color=MUTED if (v is None or est) else usage_color(v)).pack(side="right")
+            bar(b, v, 300, est, bg="#F8F6F4").pack(anchor="w", padx=10)
+            if r:
+                line = tk.Frame(b, bg="#F8F6F4")
+                line.pack(anchor="w", padx=10, pady=(5, 0))
+                label(line, f"{word} {r['when']}", 9, "bold", bg="#F8F6F4").pack(side="left")
+                ok = r.get("exact")
+                tk.Label(line, text=tr("精确", "exact") if ok else tr("估计", "est."), font=font(7, "bold"),
+                         fg="#3E9B52" if ok else MUTED, bg="#E3F3E6" if ok else "#ECE8E4", padx=4).pack(side="left", padx=6)
+                label(b, f"{r['week']} · {r['in']}", 8, color=MUTED, bg="#F8F6F4").pack(anchor="w", padx=10, pady=(1, 8))
+            else:
+                label(b, idle, 8, color=MUTED, bg="#F8F6F4", wraplength=300).pack(anchor="w", padx=10, pady=(5, 8))
+        label(c, (tr("Claude 记录于 ", "Recorded ") + short_time(a.get("updatedAt"))) if a.get("updatedAt")
+              else tr("暂无用量记录", "No usage yet"), 8, color=FAINT).pack(anchor="w", padx=14, pady=(0, 10))
+        return c
 
     def page_usage(self, p):
         self.header(p, tr("额度", "Usage"),
@@ -520,64 +672,13 @@ class App:
             label(c, tr("还没有额度记录。在 Claude 里打开一次 Code 标签页后点刷新。",
                         "No usage recorded yet. Open the Code tab in Claude once, then Refresh."),
                   10, color=MUTED).pack(anchor="w", padx=16, pady=14)
-        for a in self.accounts():
-            cur = a.get("current")
-            c = tk.Frame(p, bg=CARD, highlightbackground=BRAND if cur else BORDER,
-                         highlightthickness=2 if cur else 1)
-            c.pack(fill="x", pady=(0, 12))
-            top = tk.Frame(c, bg=CARD)
-            top.pack(fill="x", padx=16, pady=(14, 10))
-            avatar(top, "?" if not a.get("email") and not a.get("named") else self.title_of(a), 36).pack(side="left")
-            t = tk.Frame(top, bg=CARD)
-            t.pack(side="left", padx=10)
-            row = tk.Frame(t, bg=CARD)
-            row.pack(anchor="w")
-            nm = label(row, self.title_of(a) + "  ✎", 11, "bold", cursor="hand2")
-            nm.pack(side="left")
-            nm.bind("<Button-1>", lambda e, acc=a: self.rename(acc))
-            if cur:
-                tag(row, tr("当前登录", "Signed in")).pack(side="left", padx=8)
-            label(t, self.sub_of(a), 9, color=MUTED if a.get("named") else FAINT).pack(anchor="w")
-            side = tk.Frame(top, bg=CARD)
-            side.pack(side="right", anchor="n")
-            if not cur:
-                button(side, tr("⇄ 切换到这个号", "⇄ Switch to this"), lambda acc=a: self.switch_to(acc)).pack(anchor="e")
-            label(side, (tr("Claude 记录于 ", "recorded ") + short_time(a.get("updatedAt"))) if a.get("updatedAt")
-                  else tr("暂无用量记录", "no usage yet"), 8, color=FAINT).pack(anchor="e", pady=(4, 0))
-
-            blocks = tk.Frame(c, bg=CARD)
-            blocks.pack(fill="x", padx=16, pady=(0, 14))
-            blocks.columnconfigure(0, weight=1, uniform="b")
-            blocks.columnconfigure(1, weight=1, uniform="b")
-            specs = [
-                (tr("5 小时额度", "5-hour limit"), a.get("fiveHour"), a.get("fiveHourEstimated"), a.get("fiveHourReset"),
-                 tr("下次恢复", "Resets"),
-                 tr("现在可用 · 开始使用后 5 小时内恢复", "Available · resets 5 h after you start")
-                 if a.get("fiveHour") is not None else tr("暂无数据", "no data")),
-                (tr("每周额度", "Weekly limit"), a.get("weekly"), a.get("weeklyEstimated"), a.get("weeklyReset"),
-                 tr("下次重置", "Resets"),
-                 tr("重置时间未知 · 碰到一次每周限额后就能算准", "Unknown until the weekly limit is hit once")
-                 if a.get("weekly") is not None else tr("暂无数据", "no data")),
-            ]
-            for col, (title, v, est, r, word, idle) in enumerate(specs):
-                b = tk.Frame(blocks, bg="#F8F6F4")
-                b.grid(row=0, column=col, sticky="nsew", padx=(0, 10) if col == 0 else (10, 0))
-                head = tk.Frame(b, bg="#F8F6F4")
-                head.pack(fill="x", padx=12, pady=(10, 4))
-                label(head, title, 10, "bold", bg="#F8F6F4").pack(side="left")
-                label(head, "—" if v is None else f"{v}%", 15, "bold", bg="#F8F6F4",
-                      color=MUTED if (v is None or est) else usage_color(v)).pack(side="right")
-                bar(b, v, 300, est, bg="#F8F6F4").pack(anchor="w", padx=12)
-                if r:
-                    line = tk.Frame(b, bg="#F8F6F4")
-                    line.pack(anchor="w", padx=12, pady=(6, 0))
-                    label(line, f"{word} {r['when']}", 9, "bold", bg="#F8F6F4").pack(side="left")
-                    ok = r.get("exact")
-                    tk.Label(line, text=tr("精确", "exact") if ok else tr("估计", "est."), font=font(7, "bold"),
-                             fg="#3E9B52" if ok else MUTED, bg="#E3F3E6" if ok else "#ECE8E4", padx=4).pack(side="left", padx=6)
-                    label(b, f"{r['week']} · {r['in']}", 9, color=MUTED, bg="#F8F6F4").pack(anchor="w", padx=12, pady=(2, 10))
-                else:
-                    label(b, idle, 9, color=MUTED, bg="#F8F6F4", wraplength=300).pack(anchor="w", padx=12, pady=(6, 10))
+        grid = tk.Frame(p, bg=BG)
+        grid.pack(fill="x")
+        grid.columnconfigure(0, weight=1, uniform="u")
+        grid.columnconfigure(1, weight=1, uniform="u")
+        for i, a in enumerate(self.accounts()):
+            self.usage_card(grid, a).grid(row=i // 2, column=i % 2, sticky="nsew",
+                                          padx=(0, 7) if i % 2 == 0 else (7, 0), pady=(0, 14))
         label(p, "ⓘ " + tr("数据来自 Claude 在本机的记录，不联网、不读取 token：用量来自 Claude App，邮箱和精确的重置时间来自 Claude Code 的对话记录。标「精确」的是 Claude 自己给出的时间，标「估计」的是推算的。",
                           "Everything comes from Claude's own records on this computer — no network, no tokens. \"Exact\" times were reported by Claude; \"est.\" ones are inferred."),
               9, color=MUTED, bg=BG, wraplength=640).pack(anchor="w", pady=(4, 0))
@@ -647,7 +748,9 @@ class App:
             (tr("换号：三步", "Switching accounts: three steps"), [
                 tr("在「额度」或「概览」里，对要换的号点「切换」，邮箱会自动复制。", "Click Switch on the account you want — its email is copied."),
                 tr("在 Claude 左下角点头像 → 退出登录，再用这个邮箱登录，打开一次 Code 标签页。", "In Claude: avatar → Log out, sign in with that email, open the Code tab once."),
-                tr("一分钟内会自动倒数 10 秒，把之前的对话恢复到这个号（可以取消）。", "Within a minute your chats are restored automatically after a 10-second countdown (cancelable).")]),
+                tr("一分钟内会弹出系统通知，告诉你换到了哪个号、额度用了多少，然后倒数 10 秒自动恢复对话（Claude 会重启，可以取消）。有对话正在回复时会等它结束。",
+                   "Within a minute a notification tells you which account you're on and its usage, then chats are restored after a 10-second countdown (Claude restarts; cancelable). A running chat is never cut off."),
+                tr("额度用到 90% 时也会提醒一次，可以在「设置 → 提醒」里调整或关闭。", "You're also told once when a limit reaches 90% — change it in Settings → Reminders.")]),
             (tr("额度怎么看", "Reading the usage"), [
                 tr("百分比来自 Claude 自己的记录，「Claude 记录于」就是数据的时间；没登录的号显示上次登录时的情况。",
                    "Percentages come from Claude's own record — \"recorded\" shows how fresh it is."),
@@ -689,9 +792,9 @@ class App:
         r.pack(fill="x", padx=16, pady=12)
         t = tk.Frame(r, bg=CARD)
         t.pack(side="left")
-        label(t, tr("自动备份 + 换号提醒", "Auto backup + switch alert"), 10, "bold").pack(anchor="w")
-        label(t, tr("每分钟备份一次对话列表和额度记录；发现换号会提醒你恢复。",
-                    "Backs up chat lists and usage every minute; prompts you after an account switch."), 9, color=MUTED).pack(anchor="w")
+        label(t, tr("后台任务（自动备份 + 换号检测）", "Background job (backup + switch detection)"), 10, "bold").pack(anchor="w")
+        label(t, tr("每分钟备份一次对话列表和额度记录，并检测换号。关掉后不会自动恢复，也不会有提醒。",
+                    "Backs up chats and usage every minute and watches for switches. Off: no automatic restore, no reminders."), 9, color=MUTED).pack(anchor="w")
         on = bool(self.status.get("autoBackup"))
         button(r, tr("关闭", "Turn off") if on else tr("开启", "Turn on"),
                lambda: self.run_action(["uninstall-agent" if on else "install-agent"]), primary=not on).pack(side="right")
@@ -714,6 +817,8 @@ class App:
             cfg_path.write_text(json.dumps(c, ensure_ascii=False, indent=2), encoding="utf-8")
             self.render()
         button(r2, tr("关闭", "Turn off") if ar else tr("开启", "Turn on"), toggle_ar, primary=not ar).pack(side="right")
+
+        self.reminders_card(p, cfg_path)
 
         ex = (self.usage or {}).get("exact") or {}
         e = card(p)
@@ -784,6 +889,49 @@ class App:
               9, color=MUTED, wraplength=600).pack(anchor="w", padx=16, pady=(0, 12))
         self.ad_card(p)
 
+    def reminders_card(self, p, cfg_path):
+        label(p, tr("提醒", "Reminders"), 12, "bold", bg=BG).pack(anchor="w", pady=(18, 8))
+        cfg = load_json(cfg_path, {}) or {}
+        c = card(p)
+        c.pack(fill="x")
+
+        def save(key, value):
+            d = load_json(cfg_path, {}) or {}
+            d[key] = value
+            cfg_path.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.render()
+
+        limit = int(cfg.get("quota_alert_at") or 90)
+        rows = [("notify_switch", tr("换号提醒", "Account switch reminder"),
+                 tr("一换号就弹系统通知：现在是哪个邮箱、对话要不要恢复、这个号的额度用了多少。",
+                    "A notification as soon as you switch: which email, whether chats need restoring, how much is used.")),
+                ("notify_quota", tr("额度提醒", "Usage reminder"),
+                 tr(f"当前账号的 5 小时或每周额度用到 {limit}% 时提醒一次，并告诉你什么时候恢复。",
+                    f"Tells you once when the signed-in account reaches {limit}% of a limit, and when it resets."))]
+        for i, (key, title, detail) in enumerate(rows):
+            if i:
+                tk.Frame(c, bg=BORDER, height=1).pack(fill="x", padx=16)
+            r = tk.Frame(c, bg=CARD)
+            r.pack(fill="x", padx=16, pady=12)
+            t = tk.Frame(r, bg=CARD)
+            t.pack(side="left", fill="x", expand=True)
+            label(t, title, 10, "bold").pack(anchor="w")
+            label(t, detail, 9, color=MUTED, wraplength=480).pack(anchor="w")
+            on = cfg.get(key, True)
+            button(r, tr("关闭", "Turn off") if on else tr("开启", "Turn on"), lambda k=key, v=on: save(k, not v),
+                   primary=not on).pack(side="right")
+        tk.Frame(c, bg=BORDER, height=1).pack(fill="x", padx=16)
+        r = tk.Frame(c, bg=CARD)
+        r.pack(fill="x", padx=16, pady=12)
+        label(r, tr("提醒阈值", "Remind at"), 10).pack(side="left")
+        for v in (80, 90, 95):
+            tk.Button(r, text=f"{v}%", command=lambda v=v: save("quota_alert_at", v), font=font(9, "bold" if v == limit else "normal"),
+                      fg="white" if v == limit else TEXT, bg=BRAND if v == limit else "#F1EDE9", relief="flat", bd=0,
+                      padx=10, pady=3, cursor="hand2").pack(side="left", padx=(8, 0))
+        button(r, tr("发一条试试", "Send a test"), lambda: self.run_action(["notify-test"])).pack(side="right")
+        label(c, tr("提醒由后台任务发出，换号助手不用开着。", "The background job sends them — this app doesn't need to be open."),
+              8, color=FAINT).pack(anchor="w", padx=16, pady=(0, 12))
+
     def ad_card(self, p):
         """Sponsor banner, clearly labelled. Nothing is loaded until you open it."""
         bg = "#FFF3EC"
@@ -812,31 +960,70 @@ class App:
         button(btns, tr("预览", "Preview"), lambda: webbrowser.open(AD_URL), bg=bg).pack(fill="x", pady=(6, 0))
 
     # ---------------------------------------------------------------- actions
-    def claude_running_guard(self):
-        if self.status.get("claudeRunning"):
-            messagebox.showinfo(tr("先退出 Claude", "Quit Claude first"),
-                                tr("请先完全退出 Claude（包括右下角托盘里的图标），再点一次。完成后重新打开 Claude 即可。",
-                                   "Quit Claude completely (including the tray icon), then try again. Reopen Claude afterwards."))
-            return True
-        return False
+    def run_with_claude_closed(self, args):
+        """Quit Claude → run → reopen Claude (what the macOS app does)."""
+        if self.busy:
+            return
+        if not claude_running():
+            self.run_action(args)
+            return
+        self.busy = True
+        self.build_sidebar()
+        self.log_lines.append(tr("正在退出 Claude…", "Quitting Claude…"))
+
+        def first_try():
+            path = claude_exe_path()
+            gone = stop_claude(force=False)
+            self.later(lambda: after_try(path, gone))
+
+        def after_try(path, gone):
+            if not gone:
+                if not messagebox.askyesno(tr("Claude 没有退出", "Claude didn't quit"),
+                                           tr("Claude 还在运行（可能缩到了右下角托盘）。要强制结束它再继续吗？\n正在进行的对话会被打断。",
+                                              "Claude is still running (maybe in the tray). End it and continue?\nA chat in progress will be interrupted.")):
+                    self.busy = False
+                    self.log_lines.append(tr("已取消：Claude 还在运行。", "Canceled: Claude is still running."))
+                    self.refresh()
+                    return
+                threading.Thread(target=lambda: self.later(lambda: forced(path, stop_claude(force=True))), daemon=True).start()
+                return
+            go(path)
+
+        def forced(path, gone):
+            if not gone:
+                self.busy = False
+                messagebox.showerror(tr("无法退出 Claude", "Couldn't quit Claude"),
+                                     tr("请手动完全退出 Claude（含托盘图标）后再试。", "Quit Claude completely (including the tray icon) and try again."))
+                self.refresh()
+                return
+            go(path)
+
+        def go(path):
+            self.busy = False
+            def reopen():
+                if path:
+                    try:
+                        subprocess.Popen([path], close_fds=True,
+                                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+                        self.log_lines.append(tr("已重新打开 Claude。", "Reopened Claude."))
+                    except OSError:
+                        pass
+            self.run_action(args, after=reopen)
+
+        threading.Thread(target=first_try, daemon=True).start()
 
     def restore(self, confirm=True):
-        if self.claude_running_guard():
+        if confirm and not messagebox.askyesno(
+                tr("恢复对话？", "Restore chats?"),
+                tr("会先退出 Claude（正在进行的对话会中断），把所有账号的对话恢复到当前账号，完成后自动重新打开。",
+                   "Claude quits (a running chat is interrupted), every chat is restored to this account, then Claude reopens.")):
             return
-        if not confirm:
-            self.run_action(["sync", "--all"])
-            return
-        if messagebox.askyesno(tr("恢复对话？", "Restore chats?"),
-                               tr("会先备份现有列表，再把所有对话恢复到本机的 Claude 账号。完成后打开 Claude 就能看到。",
-                                  "Current lists are backed up first, then every chat is restored to this computer's Claude accounts.")):
-            self.run_action(["sync", "--all"])
+        self.run_with_claude_closed(["sync", "--all"])
 
     def undo(self):
-        if self.claude_running_guard():
-            return
         if messagebox.askyesno(tr("撤销上次操作？", "Undo the last action?"),
-                               tr("撤销上一次「恢复」或「清理」。", "Undo the last restore or cleanup.")):
-            self.run_action(["rollback"])
+                               tr("会先退出 Claude，撤销上一次「恢复」或「清理」，再重新打开。", "Claude quits, the last restore or cleanup is undone, then Claude reopens.")):
+            self.run_with_claude_closed(["rollback"])
 
     def prune(self):
         data = core_json(["prune", "--json"]) or {}
@@ -844,13 +1031,11 @@ class App:
         if not n:
             messagebox.showinfo(tr("不需要清理", "Nothing to clean up"), tr("所有对话都符合保留规则。", "Every chat matches the keep rule."))
             return
-        if self.claude_running_guard():
-            return
         items = "\n".join(f"· {x.get('project')} | {x.get('title')}" for x in (data.get("items") or [])[:12])
         if messagebox.askyesno(tr(f"清理 {n} 个旧对话？", f"Clean up {n} old chats?"),
                                tr("将从所有账号的列表里移除：\n", "Will be removed from every account:\n") + items +
                                tr("\n\n之后可以点「撤销」找回。", "\n\nYou can Undo afterwards.")):
-            self.run_action(["prune"])
+            self.run_with_claude_closed(["prune"])
 
     def save_rules(self):
         vault = Path(os.environ.get("CSV_VAULT", ""))
@@ -958,8 +1143,8 @@ class App:
         def tick():
             if state["done"]:
                 return
-            msg.configure(text=tr(f"{state['left']} 秒后自动把 {count} 个对话恢复到这个号。\n请先完全退出 Claude（含右下角托盘图标）。",
-                                  f"Restoring {count} chats to this account in {state['left']} s.\nQuit Claude completely first (including the tray icon)."))
+            msg.configure(text=tr(f"{state['left']} 秒后自动把 {count} 个对话恢复到这个号，Claude 会重启一下。",
+                                  f"Restoring {count} chats to this account in {state['left']} s — Claude will restart."))
             if state["left"] <= 0:
                 finish(True)
                 return

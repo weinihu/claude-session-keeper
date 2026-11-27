@@ -108,6 +108,9 @@ DEFAULT_CONFIG = {
     "rebuild_orphans": True,    # 为没有列表记录的旧 transcript 重建条目
     "snapshots_keep": 30,
     "exact_mode": False,        # opt-in: read official usage with Claude Code's own token every 5 min
+    "notify_switch": True,      # system notification when you switch accounts
+    "notify_quota": True,       # system notification when the signed-in account's limit is nearly used up
+    "quota_alert_at": 90,       # ... at this percentage
     # 保留规则：恢复时只带这些对话过去；"按规则清理"会删掉其余的
     "keep_rules": {
         "enabled": False,
@@ -212,6 +215,41 @@ def app_running():
             return True
     r = subprocess.run(["ps", "-axo", "comm"], capture_output=True, text=True)
     return any(line.strip().endswith("/Claude.app/Contents/MacOS/Claude") for line in r.stdout.splitlines())
+
+
+NOTIFY_LOG = os.environ.get("CSV_NOTIFY_LOG")   # tests: write notifications here instead of showing them
+
+
+def notify(title, body):
+    """Show a system notification (macOS Notification Center / Windows toast). Never raises."""
+    if NOTIFY_LOG:
+        with open(NOTIFY_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"title": title, "body": body}, ensure_ascii=False) + "\n")
+        return
+    try:
+        if IS_WINDOWS:
+            def ps(v):
+                return "'" + str(v).replace("'", "''") + "'"
+            script = (
+                "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] > $null;"
+                "$x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
+                "[Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
+                f"$t = $x.GetElementsByTagName('text'); $t.Item(0).AppendChild($x.CreateTextNode({ps(title)})) > $null;"
+                f"$t.Item(1).AppendChild($x.CreateTextNode({ps(body)})) > $null;"
+                "$id = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe';"
+                "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id).Show("
+                "[Windows.UI.Notifications.ToastNotification]::new($x))")
+            subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script],
+                           capture_output=True, timeout=20,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            def asq(v):
+                return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
+            subprocess.run(["osascript", "-e",
+                            f"display notification {asq(body)} with title {asq(title)} sound name \"Glass\""],
+                           capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def open_session_keeper():
@@ -1039,9 +1077,11 @@ def cmd_auto(args):
     trim_log()
     cfg = tool_config()
     vault = cmd_backup(args, quiet=True)
+    usage = None
     try:
         fetch_live_usage()
-        usage_data()
+        usage = usage_data()
+        quota_alerts(usage, cfg)
     except Exception:
         pass
     with open(os.path.join(VAULT, "last-run"), "w"):
@@ -1066,19 +1106,95 @@ def cmd_auto(args):
     missing = max(sum(1 for item in plan_restore(vault, a, f, cfg, transcripts) if needs_restart(item))
                   for a, _, f in acc_dirs)
     stamp = dt.datetime.now().strftime("%m-%d %H:%M")
+    switched = acc != state.get("lastAccount")
+    first_look = state.get("waitingFor") != acc          # don't repeat the reminder while we wait
     if missing and not getattr(args, "no_open", False) and chat_running():
         # restoring restarts Claude; never cut off a chat that is still answering. Check again next minute.
-        if state.get("waitingFor") != acc:
+        if first_look:
             print(T(f"[{stamp}] 检测到换号，缺 {missing} 个对话；有对话正在进行，等它停下 2 分钟后再恢复",
                     f"[{stamp}] Account switch, {missing} chat(s) missing; a chat is still running, restoring once it's idle"))
+            if switched:
+                switch_reminder(usage, cfg, missing, "waiting")
         write_json(STATE_FILE, dict(state, waitingFor=acc))
         return
+    if switched and first_look:
+        switch_reminder(usage, cfg, missing, "restore" if missing else "complete")
     write_json(STATE_FILE, {"lastAccount": acc, "folders": folders})
     print(T(f"[{stamp}] 检测到换号：{str(state.get('lastAccount'))[:8]}… -> {str(acc)[:8]}…，缺 {missing} 个对话",
             f"[{stamp}] Account switch: {str(state.get('lastAccount'))[:8]}… -> {str(acc)[:8]}…, {missing} chat(s) missing"))
     if missing and not getattr(args, "no_open", False):
         write_json(PENDING_FILE, {"account": acc, "missing": missing, "at": int(time.time() * 1000)})
         open_session_keeper()
+
+
+def _usage_line(a):
+    def pct(v):
+        return "?" if v is None else f"{v}%"
+    return T(f"5 小时已用 {pct(a.get('fiveHour'))} · 每周已用 {pct(a.get('weekly'))}",
+             f"5-hour {pct(a.get('fiveHour'))} used · weekly {pct(a.get('weekly'))} used")
+
+
+def cmd_notify_test(args):
+    cur = next((a for a in usage_data().get("accounts", []) if a.get("current")), None)
+    who = (cur or {}).get("email") or T("当前账号", "your account")
+    notify(T(f"提醒测试：当前是 {who}", f"Test reminder: signed in as {who}"),
+           (_usage_line(cur) + "\n" if cur else "") + T("换号或额度快用完时，会这样提醒你。",
+                                                         "This is how you'll be told about switches and limits."))
+
+
+def switch_reminder(usage, cfg, missing, mode):
+    """Notification right after an account switch: who you are now, the chats, the usage."""
+    if not cfg.get("notify_switch", True):
+        return
+    cur = next((a for a in (usage or {}).get("accounts", []) if a.get("current")), None)
+    who = (cur or {}).get("email") or T("新账号", "the new account")
+    if mode == "waiting":
+        chats = T(f"缺 {missing} 个对话，等正在回复的对话结束后自动补上。",
+                  f"{missing} chats missing; restoring once the running chat finishes.")
+    elif mode == "restore":
+        chats = (T(f"缺 {missing} 个对话，10 秒后自动恢复（Claude 会重启，可取消）。",
+                   f"{missing} chats missing; restoring in 10 s (Claude restarts, you can cancel).")
+                 if cfg.get("auto_restore", True) else
+                 T(f"缺 {missing} 个对话，打开换号助手点「恢复」即可。", f"{missing} chats missing; open Session Keeper to restore."))
+    else:
+        chats = T("之前的对话都在，不用恢复。", "All your chats are here, nothing to restore.")
+    body = chats + ("\n" + _usage_line(cur) if cur else "")
+    notify(T(f"已切换到 {who}", f"Switched to {who}"), body)
+    write_json(os.path.join(VAULT, "last-reminder.json"),
+               {"at": int(time.time() * 1000), "kind": "switch", "title": who, "body": body})
+
+
+
+def quota_alerts(usage, cfg):
+    """One notification per limit window when the signed-in account passes quota_alert_at %."""
+    if not cfg.get("notify_quota", True) or not usage:
+        return
+    cur = next((a for a in usage.get("accounts", []) if a.get("current")), None)
+    if not cur:
+        return
+    limit = int(cfg.get("quota_alert_at") or 90)
+    sent = load_json(ALERTS_FILE, {}) or {}
+    now = int(time.time() * 1000)
+    sent = {k: v for k, v in sent.items() if now - v < 8 * 86400 * 1000}
+    changed = False
+    for key, label_zh, label_en, reset in (("fiveHour", "5 小时额度", "5-hour limit", "fiveHourReset"),
+                                           ("weekly", "每周额度", "weekly limit", "weeklyReset")):
+        v = cur.get(key)
+        if v is None or v < limit:
+            continue
+        r = cur.get(reset) or {}
+        window = r.get("at") or cur.get(key + "ResetAt") or (now // (5 * 3600 * 1000))
+        tag = f"{cur.get('org')}:{key}:{int(window) // 60000}"
+        if tag in sent:
+            continue
+        who = cur.get("email") or cur.get("name") or ""
+        when = (T(f"将在 {r['when']} 恢复（{r['in']}）。", f"Resets {r['when']} ({r['in']}).")
+                if r.get("when") else T("恢复时间暂不确定。", "Reset time not known yet."))
+        notify(T(f"{label_zh}已用 {v}%", f"{label_en}: {v}% used"), f"{who}\n{when}")
+        sent[tag] = now
+        changed = True
+    if changed or not os.path.exists(ALERTS_FILE):
+        write_json(ALERTS_FILE, sent)
 
 
 # ---------------------------------------------------------------- usage (quota status)
@@ -1089,6 +1205,7 @@ def cmd_auto(args):
 USAGE_SRC = os.environ.get("CSV_USAGE_SRC") or os.path.join(APP_DIR, "plan-usage-history.json")
 USAGE_HIST = os.path.join(VAULT, "usage-history.json")
 ACCOUNTS_FILE = os.path.join(VAULT, "accounts.json")
+ALERTS_FILE = os.path.join(VAULT, "quota-alerts.json")
 FIVE_H = 5 * 3600 * 1000
 WEEK = 7 * 86400 * 1000
 
@@ -1969,10 +2086,12 @@ def main():
     sp = sub.add_parser("auto", help="后台任务：备份 + 检测换号")
     sp.add_argument("--no-open", action="store_true", help="检测到换号时不打开界面（测试用）")
     sub.add_parser("uninstall-agent", help="卸载后台定时自动备份")
+    sub.add_parser("notify-test", help="发一条示例提醒")
     args = p.parse_args()
     {"backup": cmd_backup, "restore": cmd_restore, "sync": cmd_sync, "status": cmd_status,
      "install-agent": cmd_install_agent, "uninstall-agent": cmd_uninstall_agent,
-     "rollback": cmd_rollback, "auto": cmd_auto, "prune": cmd_prune, "usage": cmd_usage, "live": cmd_live}[args.cmd](args)
+     "rollback": cmd_rollback, "auto": cmd_auto, "prune": cmd_prune, "usage": cmd_usage, "live": cmd_live,
+     "notify-test": cmd_notify_test}[args.cmd](args)
 
 
 if __name__ == "__main__":

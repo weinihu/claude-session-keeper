@@ -28,6 +28,7 @@ They aren't actually gone. The transcripts are still on disk. Claude just keeps 
 ## What it does
 
 - **One click after switching:** about a minute after you sign in to another account, a prompt asks *"You switched accounts. Restore now?"*. Click it and every previous chat shows up in the sidebar, ready to continue. Your projects are still there.
+- **Reminders:** a system notification the moment you switch accounts (which email you're on, whether chats need restoring, how much of its limits is used), and once when the signed-in account reaches 90% of its 5-hour or weekly limit. Restoring never cuts off a chat that is still answering. Both can be turned off in Settings → Reminders.
 - **Usage for every account:** see each account's **email**, **5-hour** and **weekly** limit usage, and estimated reset times in one list, so you always know which account to switch to. You can also name accounts, like "Work" or "Personal". The numbers come from the usage the Claude app already records on your Mac; nothing is fetched online.
 - **Automatic backup every minute:** your chat lists are always saved, even if you sign out without thinking about it. It writes only when something changed, so it uses a few MB.
 - **Deleted stays deleted:** chats you delete in Claude are removed from every account and never come back.

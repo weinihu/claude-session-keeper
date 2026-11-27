@@ -27,7 +27,8 @@ class RestoreFlowTests(unittest.TestCase):
                         CSV_PROJECTS=str(self.projects), CSV_USAGE_SRC=str(b / "none-usage.json"),
                         CSV_TOOL_CONFIG=str(b / "tool-config.json"), CSV_CLAUDE_JSON=str(b / "none.json"),
                         CSV_CLAUDE_JSON_BACKUPS=str(b / "nobackups"), CSV_IGNORE_RUNNING="1",
-                        CSV_NO_GUI="1", CSV_LANG="en")
+                        CSV_NO_GUI="1", CSV_LANG="en", CSV_NOTIFY_LOG=str(b / "notes.jsonl"))
+        self.notes_file = b / "notes.jsonl"
         (b / "nobackups").mkdir()
         (b / "tool-config.json").write_text(json.dumps({"rebuild_orphans": False}))
         self.sign_in("accA", "orgA")
@@ -85,6 +86,13 @@ class RestoreFlowTests(unittest.TestCase):
         p.unlink()
         return data
 
+    def notes(self):
+        if not self.notes_file.exists():
+            return []
+        out = [json.loads(x) for x in self.notes_file.read_text().splitlines() if x.strip()]
+        self.notes_file.unlink()
+        return out
+
     # -- the flow ---------------------------------------------------------------------
     def test_switch_cycle(self):
         self.run_core("auto")                       # first run: remember the current state
@@ -97,6 +105,12 @@ class RestoreFlowTests(unittest.TestCase):
         self.write("accA", "orgB", json.loads((self.sess / "accA" / "orgA" / "local_X.json").read_text()))
         self.run_core("auto")
         self.assertEqual(self.pending()["missing"], 3)
+        notes = self.notes()
+        self.assertEqual(len(notes), 1)
+        self.assertIn("Switched to", notes[0]["title"])
+        self.assertIn("3 chats missing", notes[0]["body"])
+        self.run_core("auto")                       # no second reminder for the same switch
+        self.assertEqual(self.notes(), [])
         self.run_core("sync", "--all")
         self.assertEqual(set(self.read("accB", "orgB")), {"X", "Z", "W"})
 
@@ -142,9 +156,45 @@ class RestoreFlowTests(unittest.TestCase):
         self.transcript("cli-live", age_ms=10 * 1000)           # a chat answered 10 seconds ago
         self.run_core("auto")
         self.assertIsNone(self.pending())
+        notes = self.notes()
+        self.assertEqual(len(notes), 1)
+        self.assertIn("running chat", notes[0]["body"])
+        self.run_core("auto")
+        self.assertEqual(self.notes(), [])          # reminded once while waiting
         self.transcript("cli-live", age_ms=5 * 60 * 1000)       # quiet for 5 minutes
         self.run_core("auto")
         self.assertEqual(self.pending()["missing"], 3)
+        self.assertEqual(self.notes(), [])
+
+    def test_switch_without_missing_chats_still_reminds(self):
+        self.run_core("auto")
+        self.sign_in("accB", "orgB")
+        self.run_core("sync", "--all")               # chats already restored by hand
+        self.run_core("auto")
+        self.assertIsNone(self.pending())
+        notes = self.notes()
+        self.assertEqual(len(notes), 1)
+        self.assertIn("nothing to restore", notes[0]["body"])
+
+    def test_reminders_can_be_turned_off(self):
+        Path(self.env["CSV_TOOL_CONFIG"]).write_text(json.dumps({"rebuild_orphans": False, "notify_switch": False}))
+        self.run_core("auto")
+        self.sign_in("accB", "orgB")
+        self.run_core("auto")
+        self.assertEqual(self.notes(), [])
+        self.assertEqual(self.pending()["missing"], 3)
+
+    def test_quota_alert_once_per_window(self):
+        now = int(time.time() * 1000)
+        (self.app / "plan-usage-history.json").write_text(json.dumps({"version": 2, "samples": [
+            {"t": now - 60000, "org": "orgA", "u": {"fh": 93, "sd": 40}}]}))
+        self.env["CSV_USAGE_SRC"] = str(self.app / "plan-usage-history.json")
+        self.run_core("auto")
+        notes = self.notes()
+        self.assertEqual(len(notes), 1, notes)
+        self.assertIn("5-hour limit: 93% used", notes[0]["title"])
+        self.run_core("auto")
+        self.assertEqual(self.notes(), [])
 
     def test_many_vanishing_at_once_is_not_a_delete(self):
         for i in range(6):
