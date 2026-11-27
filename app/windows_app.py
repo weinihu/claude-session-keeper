@@ -29,6 +29,8 @@ GITHUB_URL = "https://github.com/weinihu/claude-session-keeper"
 AD_URL = "https://tutu8.shop"
 
 # ------------------------------------------------------------------ look & feel
+# Same scale as the macOS app: spacing 4/8/12/16/20/24/32; type 20 page / 12 section / 10 body / 8-9 caption.
+SP_S, SP_M, SP_L, SP_XL, SP_XXL, SP_PAGE = 8, 12, 16, 20, 24, 32
 BG = "#F7F5F2"
 SIDEBAR = "#EFEAE5"
 CARD = "#FFFFFF"
@@ -444,18 +446,18 @@ class App:
         page = Scrollable(self.content)
         page.pack(fill="both", expand=True)
         body = tk.Frame(page.inner, bg=BG)
-        body.pack(fill="both", expand=True, padx=26, pady=22)
+        body.pack(fill="both", expand=True, padx=SP_PAGE, pady=SP_PAGE)
         if not self.status.get("dataPathReady", True):
             self.data_missing_banner(body)
         getattr(self, "page_" + self.page)(body)
 
     def header(self, parent, title, subtitle, action=None):
         h = tk.Frame(parent, bg=BG)
-        h.pack(fill="x", pady=(0, 16))
+        h.pack(fill="x", pady=(0, SP_XXL))
         t = tk.Frame(h, bg=BG)
         t.pack(side="left")
-        label(t, title, 18, "bold", bg=BG).pack(anchor="w")
-        label(t, subtitle, 10, color=MUTED, bg=BG).pack(anchor="w")
+        label(t, title, 20, "bold", bg=BG).pack(anchor="w")
+        label(t, subtitle, 10, color=MUTED, bg=BG).pack(anchor="w", pady=(4, 0))
         if action:
             button(h, action[0], action[1], bg=BG).pack(side="right")
             if self.refreshed_at:
@@ -541,7 +543,7 @@ class App:
 
         # every account
         h = tk.Frame(p, bg=BG)
-        h.pack(fill="x", pady=(22, 8))
+        h.pack(fill="x", pady=(SP_XXL, SP_M))
         label(h, tr("所有账号", "All accounts"), 12, "bold", bg=BG).pack(side="left")
         lk = label(h, tr("额度详情 →", "Usage details →"), 10, color=BRAND, bg=BG, cursor="hand2")
         lk.pack(side="right")
@@ -596,7 +598,7 @@ class App:
         self.ad_card(p)
         if self.log_lines:
             lg = card(p)
-            lg.pack(fill="x", pady=(16, 0))
+            lg.pack(fill="x", pady=(SP_L, 0))
             label(lg, tr("活动记录", "Activity"), 11, "bold").pack(anchor="w", padx=16, pady=(12, 4))
             label(lg, "\n".join(self.log_lines[-8:]), 9, color=MUTED, wraplength=640).pack(anchor="w", padx=16, pady=(0, 12))
 
@@ -627,8 +629,6 @@ class App:
                         padx=6, pady=1, cursor="hand2")
         note.pack(side="left")
         note.bind("<Button-1>", lambda e, acc=a: self.rename(acc))
-        if not cur:
-            button(top, "⇄", lambda acc=a: self.switch_to(acc)).pack(side="right", anchor="n")
         specs = [
             (tr("5 小时额度", "5-hour limit"), a.get("fiveHour"), a.get("fiveHourEstimated"), a.get("fiveHourReset"),
              tr("下次恢复", "Resets"),
@@ -658,8 +658,12 @@ class App:
                 label(b, f"{r['week']} · {r['in']}", 8, color=MUTED, bg="#F8F6F4").pack(anchor="w", padx=10, pady=(1, 8))
             else:
                 label(b, idle, 8, color=MUTED, bg="#F8F6F4", wraplength=300).pack(anchor="w", padx=10, pady=(5, 8))
-        label(c, (tr("Claude 记录于 ", "Recorded ") + short_time(a.get("updatedAt"))) if a.get("updatedAt")
-              else tr("暂无用量记录", "No usage yet"), 8, color=FAINT).pack(anchor="w", padx=14, pady=(0, 10))
+        foot = tk.Frame(c, bg=CARD)
+        foot.pack(fill="x", padx=14, pady=(0, 10))
+        label(foot, (tr("Claude 记录于 ", "Recorded ") + short_time(a.get("updatedAt"))) if a.get("updatedAt")
+              else tr("暂无用量记录", "No usage yet"), 8, color=FAINT).pack(side="left")
+        if not cur:
+            button(foot, tr("⇄ 切换到这个号", "⇄ Switch to this"), lambda acc=a: self.switch_to(acc)).pack(side="right")
         return c
 
     def page_usage(self, p):
@@ -678,7 +682,7 @@ class App:
         grid.columnconfigure(1, weight=1, uniform="u")
         for i, a in enumerate(self.accounts()):
             self.usage_card(grid, a).grid(row=i // 2, column=i % 2, sticky="nsew",
-                                          padx=(0, 7) if i % 2 == 0 else (7, 0), pady=(0, 14))
+                                          padx=(0, SP_S) if i % 2 == 0 else (SP_S, 0), pady=(0, SP_L))
         label(p, "ⓘ " + tr("数据来自 Claude 在本机的记录，不联网、不读取 token：用量来自 Claude App，邮箱和精确的重置时间来自 Claude Code 的对话记录。标「精确」的是 Claude 自己给出的时间，标「估计」的是推算的。",
                           "Everything comes from Claude's own records on this computer — no network, no tokens. \"Exact\" times were reported by Claude; \"est.\" ones are inferred."),
               9, color=MUTED, bg=BG, wraplength=640).pack(anchor="w", pady=(4, 0))
@@ -712,7 +716,7 @@ class App:
             label(t, detail, 9, color=MUTED).pack(anchor="w")
             button(r, btn, cmd, primary=primary, state="normal" if enabled and not self.busy else "disabled").pack(side="right")
 
-        label(p, tr("保留规则", "Keep rule"), 12, "bold", bg=BG).pack(anchor="w", pady=(20, 8))
+        label(p, tr("保留规则", "Keep rule"), 12, "bold", bg=BG).pack(anchor="w", pady=(SP_XXL, SP_M))
         k = card(p)
         k.pack(fill="x")
         self.keep_on = tk.BooleanVar(value=rules_on)
@@ -765,7 +769,7 @@ class App:
         ]
         for i, (title, items) in enumerate(sections, 1):
             c = card(p)
-            c.pack(fill="x", pady=(0, 12))
+            c.pack(fill="x", pady=(0, SP_L))
             r = tk.Frame(c, bg=CARD)
             r.pack(fill="x", padx=16, pady=14)
             tk.Label(r, text=str(i), font=font(11, "bold"), fg="white", bg=BRAND, width=2).pack(side="left", anchor="n")
@@ -822,7 +826,7 @@ class App:
 
         ex = (self.usage or {}).get("exact") or {}
         e = card(p)
-        e.pack(fill="x", pady=(12, 0))
+        e.pack(fill="x", pady=(SP_L, 0))
         r3 = tk.Frame(e, bg=CARD)
         r3.pack(fill="x", padx=16, pady=12)
         t3 = tk.Frame(r3, bg=CARD)
@@ -858,7 +862,7 @@ class App:
                primary=not on).pack(side="right")
 
         d = card(p)
-        d.pack(fill="x", pady=(12, 0))
+        d.pack(fill="x", pady=(SP_L, 0))
         for title, path, btn, cmd in (
                 (tr("Claude 数据文件夹", "Claude data folder"), self.status.get("dataRoot") or tr("未找到", "not found"),
                  tr("选择…", "Choose…"), self.choose_data_folder),
@@ -872,7 +876,7 @@ class App:
             button(r, btn, cmd).pack(side="right")
 
         ab = card(p)
-        ab.pack(fill="x", pady=(12, 0))
+        ab.pack(fill="x", pady=(SP_L, 0))
         r = tk.Frame(ab, bg=CARD)
         r.pack(fill="x", padx=16, pady=12)
         if self.icon_img:
@@ -890,7 +894,7 @@ class App:
         self.ad_card(p)
 
     def reminders_card(self, p, cfg_path):
-        label(p, tr("提醒", "Reminders"), 12, "bold", bg=BG).pack(anchor="w", pady=(18, 8))
+        label(p, tr("提醒", "Reminders"), 12, "bold", bg=BG).pack(anchor="w", pady=(SP_XXL, SP_M))
         cfg = load_json(cfg_path, {}) or {}
         c = card(p)
         c.pack(fill="x")
@@ -936,7 +940,7 @@ class App:
         """Sponsor banner, clearly labelled. Nothing is loaded until you open it."""
         bg = "#FFF3EC"
         ad = tk.Frame(p, bg=bg, highlightbackground="#F4CDB8", highlightthickness=1)
-        ad.pack(fill="x", pady=(16, 0))
+        ad.pack(fill="x", pady=(SP_L, 0))
         r = tk.Frame(ad, bg=bg)
         r.pack(fill="x", padx=18, pady=16)
         logo = tk.Canvas(r, width=60, height=60, bg=bg, highlightthickness=0)

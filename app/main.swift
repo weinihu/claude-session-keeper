@@ -455,6 +455,86 @@ enum Page: String, CaseIterable, Identifiable {
 
 let brand = Color(red: 0.90, green: 0.46, blue: 0.27)
 
+// MARK: - Design tokens
+// One spacing scale, one type scale, nested radii that stay concentric, one ambient shadow.
+
+enum Space {
+    static let xs: CGFloat = 4
+    static let s: CGFloat = 8
+    static let m: CGFloat = 12
+    static let l: CGFloat = 16
+    static let xl: CGFloat = 20
+    static let xxl: CGFloat = 24
+    static let page: CGFloat = 32
+}
+
+enum Radius {
+    static let card: CGFloat = 16                 // outer cards
+    static let inset: CGFloat = 8                 // card edge → panel inside it
+    static let panel: CGFloat = card - inset      // 8: inner corner = outer corner − gap
+    static let small: CGFloat = 12                // banners and boxes that aren't nested
+    static let control: CGFloat = 8               // buttons, icon tiles, sidebar rows
+}
+
+enum TypeScale {
+    static let page = Font.system(size: 26, weight: .bold)
+    static let pageSub = Font.system(size: 13)
+    static let section = Font.system(size: 15, weight: .semibold)
+    static let cardTitle = Font.system(size: 14, weight: .semibold)
+    static let body = Font.system(size: 13)
+    static let caption = Font.system(size: 11)
+}
+
+/// Blue-grey ambient tone for shadows: softer and more see-through than black.
+let shadowTone = Color(red: 0.22, green: 0.29, blue: 0.42)
+
+extension View {
+    func ambientShadow() -> some View {
+        self.shadow(color: shadowTone.opacity(0.09), radius: 24, x: 0, y: 10)
+            .shadow(color: shadowTone.opacity(0.05), radius: 2, x: 0, y: 1)
+    }
+}
+
+/// Filled buttons that keep their colour when the window isn't focused:
+/// the primary action is always the one brand-coloured button in its group.
+struct FilledButton: ButtonStyle {
+    var primary = true
+    var large = false
+    func makeBody(configuration: Configuration) -> some View {
+        FilledButtonBody(configuration: configuration, primary: primary, large: large)
+    }
+}
+
+private struct FilledButtonBody: View {
+    let configuration: ButtonStyle.Configuration
+    let primary: Bool
+    let large: Bool
+    @Environment(\.isEnabled) private var enabled
+    var body: some View {
+        configuration.label
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)     // button labels never wrap
+            .font(.system(size: large ? 13.5 : 12.5, weight: primary ? .semibold : .medium))
+            .foregroundStyle(primary ? Color.white : Color.primary.opacity(0.85))
+            .padding(.horizontal, large ? Space.l : Space.m)
+            .padding(.vertical, large ? Space.s + 1 : 5)
+            .background(RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .fill(primary ? AnyShapeStyle(LinearGradient(colors: [brand.opacity(0.92), brand], startPoint: .top, endPoint: .bottom))
+                              : AnyShapeStyle(Color.primary.opacity(0.06))))
+            .overlay(RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .stroke(primary ? Color.clear : Color.primary.opacity(0.08)))
+            .shadow(color: primary && enabled ? brand.opacity(0.28) : .clear, radius: 6, y: 2)
+            .opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.4)
+            .contentShape(RoundedRectangle(cornerRadius: Radius.control))
+    }
+}
+
+extension ButtonStyle where Self == FilledButton {
+    static var primary: FilledButton { FilledButton() }
+    static var primaryLarge: FilledButton { FilledButton(primary: true, large: true) }
+    static var secondary: FilledButton { FilledButton(primary: false) }
+}
+
 func usageColor(_ v: Int?) -> Color {
     let x = Double(v ?? 0)
     return x >= 90 ? .red : (x >= 60 ? .orange : .green)
@@ -470,15 +550,16 @@ func shortTime(_ ms: Double) -> String {
 
 /// Rounded card used everywhere.
 struct Card<Content: View>: View {
-    var padding: CGFloat = 16
+    var padding: CGFloat = Space.l
     @ViewBuilder var content: Content
     var body: some View {
         content
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.primary.opacity(0.06)))
-            .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).stroke(Color.primary.opacity(0.06)))
+            .ambientShadow()
     }
 }
 
@@ -553,53 +634,53 @@ struct Bar: View {
 struct AdCard: View {
     @ObservedObject var m: Model
     var body: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: Space.xxl) {
             ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
                     .fill(LinearGradient(colors: [Color(red: 1, green: 0.78, blue: 0.55), Color(red: 0.93, green: 0.47, blue: 0.27)],
                                          startPoint: .topLeading, endPoint: .bottomTrailing))
                 Image(systemName: "bolt.fill").font(.system(size: 26, weight: .bold)).foregroundStyle(.white)
             }
             .frame(width: 64, height: 64)
             .shadow(color: brand.opacity(0.35), radius: 8, y: 3)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: Space.xs) {
+                HStack(spacing: Space.s) {
                     Text(L("广告", "Ad")).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
                         .padding(.horizontal, 6).padding(.vertical, 2).background(Capsule().fill(brand))
                     Text("tutu8.shop").font(.system(size: 17, weight: .bold))
                 }
                 Text(L("AI 会员代充值 —— 作者自营的充值网站", "AI subscription top-ups — the author's own shop"))
                     .font(.callout).foregroundStyle(.secondary)
-                HStack(spacing: 6) {
+                HStack(spacing: Space.s) {
                     chip(L("AI 会员代充", "AI subscription top-up"))
                     chip(L("作者自营", "Run by the author"))
                     chip(L("非 Anthropic 官方", "Not affiliated with Anthropic"))
                 }
             }
             Spacer()
-            VStack(spacing: 8) {
+            VStack(spacing: Space.s) {
                 Button { m.showAdPreview = true } label: {
                     Label(L("预览", "Preview"), systemImage: "eye").frame(width: 96)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.secondary)
                 Link(destination: URL(string: "https://tutu8.shop")!) {
                     Label(L("去看看", "Visit"), systemImage: "arrow.up.right").frame(width: 96)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.primary)
             }
         }
-        .padding(18)
+        .padding(Space.xl)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
                 .fill(LinearGradient(colors: [brand.opacity(0.10), brand.opacity(0.03)], startPoint: .topLeading, endPoint: .bottomTrailing))
         )
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(brand.opacity(0.25)))
+        .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).stroke(brand.opacity(0.25)))
         .sheet(isPresented: $m.showAdPreview) { AdPreview(m: m) }
     }
 
     func chip(_ t: String) -> some View {
         Text(t).font(.caption2.weight(.medium)).foregroundStyle(brand)
-            .padding(.horizontal, 7).padding(.vertical, 3)
+            .padding(.horizontal, Space.s).padding(.vertical, 3)
             .background(Capsule().fill(brand.opacity(0.12)))
     }
 }
@@ -609,16 +690,16 @@ struct AdPreview: View {
     @ObservedObject var m: Model
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: Space.m) {
                 Text(L("广告", "Ad")).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
                     .padding(.horizontal, 6).padding(.vertical, 2).background(Capsule().fill(brand))
-                Text("tutu8.shop").font(.headline)
+                Text("tutu8.shop").font(TypeScale.section)
                 Text(L("AI 会员代充 · 预览", "AI top-ups · preview")).foregroundStyle(.secondary)
                 Spacer()
                 Link(L("在浏览器中打开", "Open in browser"), destination: URL(string: "https://tutu8.shop")!)
                 Button(L("关闭", "Close")) { m.showAdPreview = false }.keyboardShortcut(.cancelAction)
             }
-            .padding(12)
+            .padding(Space.m)
             Divider()
             WebPreview(url: URL(string: "https://tutu8.shop")!)
         }
@@ -644,9 +725,9 @@ struct PageHeader<Trailing: View>: View {
     @ViewBuilder var trailing: Trailing
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.system(size: 22, weight: .bold))
-                Text(subtitle).font(.callout).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text(title).font(TypeScale.page)
+                Text(subtitle).font(TypeScale.pageSub).foregroundStyle(.secondary)
             }
             Spacer()
             trailing
@@ -672,7 +753,7 @@ struct ContentView: View {
                 .background(Color(nsColor: .underPageBackgroundColor).opacity(0.55))
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: Space.xxl) {
                     if let n = m.countdown { autoRestoreBanner(n) }
                     if let e = m.error { errorBanner(e) }
                     switch m.page ?? .overview {
@@ -683,7 +764,7 @@ struct ContentView: View {
                     case .settings: settingsPage
                     }
                 }
-                .padding(.horizontal, 32).padding(.top, 40).padding(.bottom, 28)
+                .padding(.horizontal, Space.page).padding(.top, 40).padding(.bottom, Space.page)
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)          // centered column
             }
@@ -737,7 +818,7 @@ struct ContentView: View {
 
     var noteSheet: some View {
         let target = m.usage?.accounts.first { $0.org == m.renameOrg }
-        return VStack(alignment: .leading, spacing: 14) {
+        return VStack(alignment: .leading, spacing: Space.m) {
             Text(L("账号备注", "Account note")).font(.title3.bold())
             Text(target?.email ?? "").font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
             TextField(L("例如：工作号（留空 = 删除备注）", "e.g. Work (leave empty to delete)"), text: $m.renameText)
@@ -752,20 +833,20 @@ struct ContentView: View {
                 Spacer()
                 Button(L("取消", "Cancel")) { m.showRename = false }.keyboardShortcut(.cancelAction)
                 Button(L("保存", "Save")) { Task { await m.saveRename() } }
-                    .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction).buttonStyle(.primary)
             }
         }
-        .padding(22)
+        .padding(Space.xxl)
         .frame(width: 420)
     }
 
     func noteChip(_ a: Usage.Account) -> some View {
         Button { m.startRename(a) } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: Space.xs) {
                 Image(systemName: a.note == nil ? "plus" : "tag").font(.system(size: 9, weight: .semibold))
                 Text(a.note ?? L("备注", "Note")).font(.caption.weight(.medium)).lineLimit(1)
             }
-            .padding(.horizontal, 7).padding(.vertical, 2)
+            .padding(.horizontal, Space.s).padding(.vertical, 2)
             .background(Capsule().fill(a.note == nil ? Color.secondary.opacity(0.10) : brand.opacity(0.12)))
             .foregroundStyle(a.note == nil ? Color.secondary : brand)
         }
@@ -777,36 +858,36 @@ struct ContentView: View {
 
     var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: Space.m) {
                 Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 34, height: 34)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(L("Claude 换号助手", "Session Keeper")).font(.system(size: 13, weight: .semibold))
                     Text(L("对话不丢 · 额度清楚", "for Claude")).font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 14).padding(.top, 44).padding(.bottom, 14)
+            .padding(.horizontal, Space.l).padding(.top, 44).padding(.bottom, Space.l)
 
             VStack(spacing: 2) {
                 ForEach(Page.allCases) { p in sidebarItem(p) }
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, Space.m)
             Spacer()
 
-            sidebarStatus.padding(12)
+            sidebarStatus.padding(Space.m)
         }
     }
 
     func sidebarItem(_ p: Page) -> some View {
         let selected = (m.page ?? .overview) == p
         return Button { m.page = p } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: Space.m) {
                 Image(systemName: p.icon).font(.system(size: 14, weight: .medium)).frame(width: 20)
                 Text(p.title).font(.system(size: 13, weight: selected ? .semibold : .regular))
                 Spacer()
             }
             .foregroundStyle(selected ? brand : Color.primary.opacity(0.8))
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(selected ? brand.opacity(0.14) : .clear))
+            .padding(.horizontal, Space.m).padding(.vertical, Space.s)
+            .background(RoundedRectangle(cornerRadius: Radius.control, style: .continuous).fill(selected ? brand.opacity(0.14) : .clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -814,12 +895,12 @@ struct ContentView: View {
 
     var sidebarStatus: some View {
         let on = m.status?.autoBackup ?? false
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: Space.m) {
             if let u = currentUsage {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: Space.s) {
                     Text(L("当前账号", "Signed in")).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     Text(u.title).font(.caption.weight(.medium)).lineLimit(1).truncationMode(.middle).help(u.title)
-                    HStack(spacing: 6) {
+                    HStack(spacing: Space.s) {
                         Text("5h").font(.caption2).foregroundStyle(.secondary)
                         Bar(value: u.fiveHour, estimated: u.fiveHourEstimated, width: 44)
                         Text(L("周", "wk")).font(.caption2).foregroundStyle(.secondary)
@@ -828,7 +909,7 @@ struct ContentView: View {
                 }
                 Divider()
             }
-            HStack(spacing: 8) {
+            HStack(spacing: Space.s) {
                 Circle().fill(on ? Color.green : Color.secondary).frame(width: 7, height: 7)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(on ? L("自动备份 · 换号提醒开启", "Backup & reminders on") : L("后台任务已关闭", "Background job off"))
@@ -841,12 +922,12 @@ struct ContentView: View {
                 if m.busy { ProgressView().controlSize(.small) }
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
+        .padding(Space.m)
+        .background(RoundedRectangle(cornerRadius: Radius.small, style: .continuous).fill(Color.primary.opacity(0.05)))
     }
 
     func autoRestoreBanner(_ n: Int) -> some View {
-        HStack(spacing: 14) {
+        HStack(spacing: Space.m) {
             ZStack {
                 Circle().stroke(Color.white.opacity(0.35), lineWidth: 3)
                 Circle().trim(from: 0, to: CGFloat(n) / 10).stroke(Color.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
@@ -855,7 +936,7 @@ struct ContentView: View {
             }
             .frame(width: 38, height: 38)
             VStack(alignment: .leading, spacing: 2) {
-                Text(L("检测到你换了账号", "You switched accounts")).font(.headline).foregroundStyle(.white)
+                Text(L("检测到你换了账号", "You switched accounts")).font(TypeScale.section).foregroundStyle(.white)
                 Text(L("\(n) 秒后自动把 \(m.switchMissing) 个对话恢复到这个号，Claude 会重启一下。",
                        "Restoring \(m.switchMissing) chats to this account in \(n) s — Claude will restart."))
                     .font(.callout).foregroundStyle(.white.opacity(0.9))
@@ -863,28 +944,28 @@ struct ContentView: View {
             Spacer()
             Button(L("取消", "Cancel")) { m.cancelAutoRestore() }
                 .buttonStyle(.plain).foregroundStyle(.white.opacity(0.9))
-                .padding(.horizontal, 12).padding(.vertical, 6)
+                .padding(.horizontal, Space.m).padding(.vertical, 6)
                 .background(Capsule().stroke(Color.white.opacity(0.6)))
             Button(L("立即恢复", "Restore now")) { m.restoreNow() }
                 .buttonStyle(.plain).foregroundStyle(brand).fontWeight(.semibold)
-                .padding(.horizontal, 14).padding(.vertical, 6)
+                .padding(.horizontal, Space.l).padding(.vertical, 6)
                 .background(Capsule().fill(Color.white))
         }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .padding(Space.l)
+        .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
             .fill(LinearGradient(colors: [Color(red: 0.93, green: 0.52, blue: 0.31), Color(red: 0.82, green: 0.38, blue: 0.24)],
                                  startPoint: .leading, endPoint: .trailing)))
         .shadow(color: brand.opacity(0.25), radius: 10, y: 4)
     }
 
     func errorBanner(_ e: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: Space.m) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             Text(e).font(.callout).textSelection(.enabled)
         }
-        .padding(12)
+        .padding(Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.12)))
+        .background(RoundedRectangle(cornerRadius: Radius.small, style: .continuous).fill(Color.orange.opacity(0.12)))
     }
 
     // MARK: overview
@@ -892,7 +973,7 @@ struct ContentView: View {
     var currentUsage: Usage.Account? { m.usage?.accounts.first { $0.current } }
 
     var overviewPage: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: Space.xxl) {
             PageHeader(title: L("概览", "Overview"),
                        subtitle: L("换号不丢对话，每个号的额度一眼看清", "Switch accounts without losing chats — see every account's usage at a glance")) {
                 refreshControl
@@ -908,9 +989,9 @@ struct ContentView: View {
     var heroCard: some View {
         Card(padding: 0) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .center, spacing: 16) {
+                HStack(alignment: .center, spacing: Space.l) {
                     Avatar(name: currentUsage?.avatarText ?? "?", size: 52)
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: Space.xs) {
                         Text(L("当前登录", "Signed in")).font(.caption.weight(.semibold)).foregroundStyle(brand)
                         Text(currentUsage?.title ?? (m.status?.currentAccount.map { String($0.prefix(8)) + "…" } ?? "—"))
                             .font(.system(size: 19, weight: .semibold)).lineLimit(1).truncationMode(.tail)
@@ -929,17 +1010,17 @@ struct ContentView: View {
                         miniGauge(L("每周", "Weekly"), u.weekly, u.weeklyEstimated)
                     }
                 }
-                .padding(20)
+                .padding(Space.xl)
                 if let u = currentUsage {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: Space.s) {
                         resetLine(L("5 小时", "5-hour"), u.fiveHourReset,
                                   u.fiveHour == nil ? L("暂无数据", "no data") : L("现在可用", "available now"))
                         resetLine(L("每周", "Weekly"), u.weeklyReset, L("重置时间未知", "reset unknown"))
                     }
-                    .padding(.horizontal, 20).padding(.bottom, 16)
+                    .padding(.horizontal, Space.xl).padding(.bottom, Space.l)
                 }
                 Divider()
-                HStack(spacing: 18) {
+                HStack(spacing: Space.xxl) {
                     let n = m.status?.accounts.first { $0.current }?.sessions ?? 0
                     footStat("bubble.left.and.bubble.right", "\(n)", L("侧边栏对话", "in sidebar"))
                     footStat("tray.full", "\(m.status?.vaultSessions ?? 0)", L("已备份", "backed up"))
@@ -949,17 +1030,17 @@ struct ContentView: View {
                     Button { m.confirmRestore = true } label: {
                         Label(L("恢复所有对话", "Restore all chats"), systemImage: "arrow.down.circle").padding(.horizontal, 4)
                     }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
+                    .buttonStyle(.primaryLarge)
                     .disabled(m.busy || m.status == nil)
                 }
-                .padding(.horizontal, 20).padding(.vertical, 14)
+                .padding(.horizontal, Space.xl).padding(.vertical, Space.l)
                 .background(Color.primary.opacity(0.025))
             }
         }
     }
 
     func footStat(_ icon: String, _ value: String, _ label: String) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Space.s) {
             Image(systemName: icon).font(.caption).foregroundStyle(brand)
             Text(value).font(.callout.weight(.semibold).monospacedDigit())
             Text(label).font(.caption).foregroundStyle(.secondary)
@@ -968,9 +1049,9 @@ struct ContentView: View {
 
     /// Every account on one card: full email, note, both limits, and Switch.
     var accountsList: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Space.m) {
             HStack {
-                Text(L("所有账号", "All accounts")).font(.headline)
+                Text(L("所有账号", "All accounts")).font(TypeScale.section)
                 Spacer()
                 Button(L("额度详情 →", "Usage details →")) { m.page = .usage }.buttonStyle(.borderless)
             }
@@ -979,16 +1060,16 @@ struct ContentView: View {
                     let list = m.usage?.accounts ?? []
                     if list.isEmpty {
                         Text(L("还没有额度记录。在 Claude 里打开一次 Code 标签页后点刷新。", "No usage yet. Open the Code tab in Claude once."))
-                            .font(.callout).foregroundStyle(.secondary).padding(16)
+                            .font(.callout).foregroundStyle(.secondary).padding(Space.l)
                     } else {
-                        HStack(spacing: 12) {
+                        HStack(spacing: Space.m) {
                             Text(L("账号", "Account")).frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 42)
                             Text(L("5 小时", "5-hour")).frame(width: 104, alignment: .leading)
                             Text(L("每周", "Weekly")).frame(width: 104, alignment: .leading)
-                            Color.clear.frame(width: 56, height: 1)
+                            Color.clear.frame(width: 72, height: 1)
                         }
                         .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                        .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 6)
+                        .padding(.horizontal, Space.l).padding(.top, Space.m).padding(.bottom, 6)
                         Divider()
                     }
                     ForEach(Array(list.enumerated()), id: \.element.id) { i, a in
@@ -1001,15 +1082,15 @@ struct ContentView: View {
     }
 
     func accountRow(_ a: Usage.Account) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Space.m) {
             Avatar(name: a.avatarText, size: 30)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
+                HStack(spacing: Space.s) {
                     Text(a.title).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.tail)
                         .textSelection(.enabled)
                     if a.current { Tag(text: L("当前", "Current")) }
                 }
-                HStack(spacing: 4) {
+                HStack(spacing: Space.xs) {
                     if let n = a.note {
                         Text(n).font(.caption.weight(.medium)).foregroundStyle(brand)
                         Text("·").font(.caption).foregroundStyle(.tertiary)
@@ -1026,20 +1107,20 @@ struct ContentView: View {
                 if a.current {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(brand)
                 } else {
-                    Button(L("切换", "Switch")) { m.switchTo(a) }.controlSize(.small)
+                    Button(L("切换", "Switch")) { m.switchTo(a) }.buttonStyle(.secondary)
                 }
             }
-            .frame(width: 56)
+            .frame(width: 72, alignment: .trailing)
         }
-        .padding(.horizontal, 16).padding(.vertical, 11)
+        .padding(.horizontal, Space.l).padding(.vertical, Space.m)
         .background(a.current ? brand.opacity(0.05) : .clear)
     }
 
     var activityCard: some View {
         Card {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: Space.s) {
                 HStack {
-                    Text(L("活动记录", "Activity")).font(.headline)
+                    Text(L("活动记录", "Activity")).font(TypeScale.section)
                     Spacer()
                     Button(L("清空", "Clear")) { m.log = "" }.buttonStyle(.borderless).font(.caption)
                 }
@@ -1050,23 +1131,23 @@ struct ContentView: View {
     }
 
     func miniGauge(_ label: String, _ v: Int?, _ est: Bool) -> some View {
-        VStack(spacing: 4) {
+        VStack(spacing: Space.xs) {
             Ring(value: v, estimated: est, size: 54, line: 5)
             Text(label).font(.caption2).foregroundStyle(.secondary)
         }
     }
 
     func resetLine(_ label: String, _ r: Usage.Reset?, _ idle: String) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Space.s) {
             Image(systemName: "clock.arrow.circlepath").font(.caption).foregroundStyle(brand)
-            Text(label).font(.caption.weight(.semibold))
+            Text(label).font(.caption.weight(.semibold)).frame(width: isZH ? 40 : 50, alignment: .leading)
             Text(r.map { "\($0.when) · \($0.week) · \($0.inText)" + ($0.exact ? "" : L("（估计）", " (est.)")) } ?? idle)
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
     }
 
     func compactBar(_ v: Int?, _ est: Bool) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Space.s) {
             Bar(value: v, estimated: est, width: 58)
             Text(v.map { "\($0)%" } ?? "—").font(.caption.monospacedDigit())
                 .foregroundStyle(est || v == nil ? .secondary : .primary).frame(width: 36, alignment: .leading)
@@ -1077,15 +1158,15 @@ struct ContentView: View {
     // MARK: usage
 
     var usagePage: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: Space.xxl) {
             PageHeader(title: L("额度", "Usage"),
                        subtitle: L("每个账号的 5 小时额度和每周额度，以及下一次重置时间", "5-hour and weekly limits for every account, and when each resets")) {
                 refreshControl
             }
             if let u = m.usage, !u.accounts.isEmpty {
                 if let ex = u.exact, ex.enabled { exactBanner(ex, u) }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 14, alignment: .top)],
-                          alignment: .leading, spacing: 14) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: Space.l, alignment: .top)],
+                          alignment: .leading, spacing: Space.l) {
                     ForEach(u.accounts) { a in usageCard(a) }
                 }
                 Label(L("数据来自 Claude 在本机的记录，不联网、不读取 token：用量来自 Claude App；邮箱和精确的重置时间来自 Claude Code 的对话记录。标「精确」的是 Claude 自己给出的时间，标「估计」的是推算的。只有当前登录的账号会更新用量。",
@@ -1107,7 +1188,7 @@ struct ContentView: View {
     func exactBanner(_ ex: Usage.Exact, _ u: Usage) -> some View {
         let desktop = u.accounts.first { $0.current }?.email
         let mismatch = ex.email != nil && desktop != nil && ex.email != desktop
-        return HStack(alignment: .top, spacing: 10) {
+        return HStack(alignment: .top, spacing: Space.m) {
             Image(systemName: mismatch ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
                 .foregroundStyle(mismatch ? Color.orange : Color.green)
             VStack(alignment: .leading, spacing: 2) {
@@ -1122,29 +1203,26 @@ struct ContentView: View {
             }
             Spacer()
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill((mismatch ? Color.orange : Color.green).opacity(0.08)))
+        .padding(Space.m)
+        .background(RoundedRectangle(cornerRadius: Radius.small, style: .continuous).fill((mismatch ? Color.orange : Color.green).opacity(0.08)))
     }
 
     func usageCard(_ a: Usage.Account) -> some View {
-        Card(padding: 16) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 10) {
+        Card(padding: Radius.inset) {
+            VStack(alignment: .leading, spacing: Space.s) {
+                HStack(alignment: .top, spacing: Space.m) {
                     Avatar(name: a.avatarText, size: 34)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(a.title).font(.system(size: 13.5, weight: .semibold)).lineLimit(1).truncationMode(.tail)
+                        Text(a.title).font(TypeScale.cardTitle).lineLimit(1).truncationMode(.tail)
                             .textSelection(.enabled).help(a.title)
-                        HStack(spacing: 6) {
+                        HStack(spacing: Space.s) {
                             if a.current { Tag(text: L("当前登录", "Signed in")) }
                             noteChip(a)
                         }
                     }
-                    Spacer(minLength: 4)
-                    if !a.current {
-                        Button { m.switchTo(a) } label: { Image(systemName: "arrow.left.arrow.right") }
-                            .controlSize(.small).help(L("切换到这个号", "Switch to this account"))
-                    }
+                    Spacer(minLength: 0)
                 }
+                .padding([.horizontal, .top], Space.s).padding(.bottom, Space.xs)
                 limitBlock(L("5 小时额度", "5-hour limit"), a.fiveHour, a.fiveHourEstimated, a.fiveHourReset,
                            resetWord: L("下次恢复", "Resets"),
                            idle: a.fiveHour == nil ? L("暂无数据", "no data")
@@ -1153,16 +1231,27 @@ struct ContentView: View {
                            resetWord: L("下次重置", "Resets"),
                            idle: a.weekly == nil ? L("暂无数据", "no data")
                                : L("重置时间未知 · 碰到一次每周限额后就能算准", "Reset time unknown until the weekly limit is hit once"))
-                Text(a.updatedAt > 0 ? L("Claude 记录于 ", "Recorded ") + shortTime(a.updatedAt) : L("暂无用量记录", "No usage yet"))
-                    .font(.caption2).foregroundStyle(.tertiary)
+                HStack {
+                    Text(a.updatedAt > 0 ? L("Claude 记录于 ", "Recorded ") + shortTime(a.updatedAt) : L("暂无用量记录", "No usage yet"))
+                        .font(.caption2).foregroundStyle(.tertiary)
+                    Spacer()
+                    if !a.current {
+                        Button { m.switchTo(a) } label: {
+                            Label(L("切换到这个号", "Switch to this"), systemImage: "arrow.left.arrow.right")
+                        }
+                        .buttonStyle(.secondary)
+                    }
+                }
+                .frame(minHeight: 28)
+                .padding(.horizontal, Space.s).padding(.bottom, Space.xs)
             }
         }
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
             .stroke(a.current ? brand.opacity(0.45) : .clear, lineWidth: 1.5))
     }
 
     func limitBlock(_ title: String, _ v: Int?, _ est: Bool, _ r: Usage.Reset?, resetWord: String, idle: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Space.s) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title).font(.callout.weight(.medium))
                 Spacer()
@@ -1179,7 +1268,7 @@ struct ContentView: View {
             }
             .frame(height: 6)
             if let r = r {
-                HStack(spacing: 6) {
+                HStack(spacing: Space.s) {
                     Text("\(resetWord) \(r.when)").font(.caption.weight(.medium))
                     Text(r.exact ? L("精确", "exact") : L("估计", "est."))
                         .font(.system(size: 9, weight: .semibold))
@@ -1192,15 +1281,15 @@ struct ContentView: View {
                 Text(idle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(10)
+        .padding(Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.035)))
+        .background(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous).fill(Color.primary.opacity(0.035)))
     }
 
     // MARK: chats
 
     var chatsPage: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: Space.xxl) {
             PageHeader(title: L("对话", "Chats"),
                        subtitle: L("备份、恢复和整理 Claude Code 的对话列表", "Back up, restore and tidy your Claude Code chat list"))
             Card(padding: 0) {
@@ -1208,16 +1297,16 @@ struct ContentView: View {
                     actionRow("arrow.down.circle", L("恢复到当前账号", "Restore to this account"),
                               L("把所有账号的对话加进当前账号的侧边栏。", "Add chats from every account to this account's sidebar."),
                               L("恢复", "Restore"), prominent: true, enabled: m.status != nil) { m.confirmRestore = true }
-                    Divider().padding(.leading, 56)
+                    Divider().padding(.leading, 58)
                     actionRow("externaldrive.badge.checkmark", L("立即备份", "Back up now"),
                               L("后台每分钟会自动备份，这里可以手动再来一次。", "Runs every minute in the background; run it now by hand."),
                               L("备份", "Back up"), enabled: true) { Task { await m.run(["backup"]) } }
-                    Divider().padding(.leading, 56)
+                    Divider().padding(.leading, 58)
                     actionRow("sparkles", L("清理旧对话", "Clean up old chats"),
                               m.rules.enabled ? L("按下面的保留规则，从所有账号里移除旧对话。", "Remove old chats from every account using the rule below.")
                                               : L("先打开下面的保留规则。", "Turn on the keep rule below first."),
                               L("清理…", "Clean up…"), enabled: m.rules.enabled) { Task { await m.preparePrune() } }
-                    Divider().padding(.leading, 56)
+                    Divider().padding(.leading, 58)
                     actionRow("arrow.uturn.backward", L("撤销上次操作", "Undo last action"),
                               L("撤销上一次「恢复」或「清理」。", "Undo the last restore or cleanup."),
                               L("撤销", "Undo"), enabled: m.status?.canUndo ?? false) { m.confirmUndo = true }
@@ -1225,16 +1314,16 @@ struct ContentView: View {
             }
             .disabled(m.busy)
 
-            Text(L("保留规则", "Keep rule")).font(.headline).padding(.top, 4)
+            Text(L("保留规则", "Keep rule")).font(TypeScale.section).padding(.bottom, -Space.m)   // title sits with its card
             Card {
                 let r = m.rules
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: Space.m) {
                     switchRow(L("只保留最近的对话", "Keep only recent chats"),
                               L("恢复时只带这些对话过去，「清理旧对话」也按这个规则。", "Restore brings only these, and Clean up uses the same rule."),
                               Binding(get: { r.enabled }, set: { v in var n = r; n.enabled = v; m.saveRules(n) }))
                     if r.enabled {
                         Divider()
-                        HStack(spacing: 24) {
+                        HStack(spacing: Space.xxl) {
                             Stepper(value: Binding(get: { r.days }, set: { v in var n = r; n.days = v; m.saveRules(n) }), in: 1...90) {
                                 Text(L("最近 \(r.days) 天", "Last \(r.days) days"))
                             }
@@ -1250,26 +1339,23 @@ struct ContentView: View {
 
     func actionRow(_ icon: String, _ title: String, _ detail: String, _ button: String,
                    prominent: Bool = false, enabled: Bool, action: @escaping () -> Void) -> some View {
-        HStack(spacing: 14) {
+        HStack(spacing: Space.m) {
             Image(systemName: icon).font(.system(size: 16)).foregroundStyle(brand)
                 .frame(width: 30, height: 30)
-                .background(RoundedRectangle(cornerRadius: 7).fill(brand.opacity(0.12)))
+                .background(RoundedRectangle(cornerRadius: Radius.control, style: .continuous).fill(brand.opacity(0.12)))
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.body.weight(.medium))
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if prominent {
-                Button(button, action: action).buttonStyle(.borderedProminent).disabled(!enabled)
-            } else {
-                Button(button, action: action).disabled(!enabled)
-            }
+            Button(action: action) { Text(button).frame(minWidth: 52) }
+                .buttonStyle(FilledButton(primary: prominent)).disabled(!enabled)
         }
-        .padding(.horizontal, 14).padding(.vertical, 12)
+        .padding(.horizontal, Space.l).padding(.vertical, Space.m)
     }
 
     func switchRow(_ title: String, _ detail: String, _ isOn: Binding<Bool>) -> some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: Space.m) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                 Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -1281,24 +1367,25 @@ struct ContentView: View {
 
     /// Refresh with feedback: spinner while working, then when Claude last recorded usage.
     var refreshControl: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Space.m) {
             if let t = m.refreshedAt, !m.refreshing {
                 Text(L("已刷新 ", "Refreshed ") + t.formatted(date: .omitted, time: .standard))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Button { Task { await m.manualRefresh() } } label: {
-                HStack(spacing: 5) {
+                HStack(spacing: Space.xs) {
                     if m.refreshing { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") }
                     Text(L("刷新", "Refresh"))
                 }
             }
+            .buttonStyle(.secondary)
             .disabled(m.refreshing)
         }
     }
 
     var remindersCard: some View {
         Card {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: Space.m) {
                 switchRow(L("换号提醒", "Account switch reminder"),
                           L("一换号就弹系统通知：现在是哪个邮箱、对话要不要恢复、这个号的额度用了多少。",
                             "A system notification as soon as you switch: which email you're on, whether chats need restoring, and how much of its limits is used."),
@@ -1319,7 +1406,7 @@ struct ContentView: View {
                            "The background job sends them — this app doesn't need to be open. macOS may ask to allow notifications once."))
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Spacer()
-                    Button(L("发一条试试", "Send a test")) { Task { await m.testReminder() } }
+                    Button(L("发一条试试", "Send a test")) { Task { await m.testReminder() } }.buttonStyle(.secondary)
                 }
             }
         }
@@ -1329,14 +1416,14 @@ struct ContentView: View {
         let ex = m.usage?.exact
         let on = ex?.enabled ?? false
         return Card {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: Space.m) {
                 switchRow(L("精确模式（读取官方额度）", "Exact mode (official usage)"),
                           L("开启后，在你用过 Claude 之后（最多 10 分钟一次、每天最多 60 次），用 Claude Code 自己保存的登录凭证向 Anthropic 查询一次当前账号的额度（与 /usage 命令同一个接口），百分比和重置时间都是官方数字。凭证只用于这次查询，不保存、不刷新、不发往别处。开启时会锁定当前网络，断网不查询，出口 IP 或网络一变就自动关闭。第一次开启时 macOS 会询问是否允许读取钥匙串。",
                             "After you've used Claude (at most every 10 min, 60 a day), uses the sign-in Claude Code already stores to ask Anthropic for the signed-in account's usage (same endpoint as /usage) — official numbers. The credential is used for that request only. Locks to your current network: nothing is sent offline, and it turns itself off if the egress IP or network changes. The first time, macOS asks to allow Keychain access."),
                           Binding(get: { on }, set: { v in Task { await m.setExactMode(v) } }))
                 if !on, let off = ex?.autoOffAt, ex?.error != nil {
                     Divider()
-                    HStack(alignment: .top, spacing: 8) {
+                    HStack(alignment: .top, spacing: Space.s) {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.caption)
                         Text(L("已在 \(shortTime(off)) 自动关闭：", "Turned off at \(shortTime(off)): ") + exactStatusText(ex)
                              + L(" 确认网络稳定后可以重新打开。", " Turn it back on once your network is stable."))
@@ -1345,12 +1432,12 @@ struct ContentView: View {
                 }
                 if on {
                     Divider()
-                    HStack(spacing: 8) {
+                    HStack(spacing: Space.s) {
                         Circle().fill((ex?.ok ?? false) ? Color.green : Color.orange).frame(width: 7, height: 7)
                         Text(exactStatusText(ex)).font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    HStack(spacing: 6) {
+                    HStack(spacing: Space.s) {
                         Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
                         Text(L("网络已锁定：", "Network locked: ") + (ex?.lockedIp ?? "—")
                              + L(" · 今天查询 \(ex?.count ?? 0) 次（上限 60）", " · \(ex?.count ?? 0) reads today (max 60)"))
@@ -1393,7 +1480,7 @@ struct ContentView: View {
     // MARK: guide
 
     var guidePage: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: Space.xxl) {
             PageHeader(title: L("使用指南", "Guide"), subtitle: L("三分钟看懂怎么用", "Everything in three minutes"))
             guideCard("1", L("平时：什么都不用做", "Day to day: nothing to do"), [
                 L("后台每分钟自动备份一次对话列表和额度记录，只在有变化时才写入。", "A background job backs up chat lists and usage every minute, writing only when something changed."),
@@ -1424,14 +1511,14 @@ struct ContentView: View {
 
     func guideCard(_ n: String, _ title: String, _ items: [String]) -> some View {
         Card(padding: 18) {
-            HStack(alignment: .top, spacing: 14) {
+            HStack(alignment: .top, spacing: Space.m) {
                 Text(n).font(.system(size: 15, weight: .bold, design: .rounded)).foregroundStyle(.white)
                     .frame(width: 28, height: 28).background(Circle().fill(brand))
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(title).font(.headline)
+                VStack(alignment: .leading, spacing: Space.s) {
+                    Text(title).font(TypeScale.section)
                     ForEach(items, id: \.self) { t in
-                        HStack(alignment: .top, spacing: 8) {
-                            Circle().fill(Color.secondary.opacity(0.5)).frame(width: 4, height: 4).padding(.top, 7)
+                        HStack(alignment: .top, spacing: Space.s) {
+                            Circle().fill(Color.secondary.opacity(0.5)).frame(width: 4, height: 4).padding(.top, Space.s)
                             Text(t).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -1443,11 +1530,11 @@ struct ContentView: View {
     // MARK: settings
 
     var settingsPage: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: Space.xxl) {
             PageHeader(title: L("设置", "Settings"), subtitle: L("后台任务、备份位置和关于", "Background job, vault and about"))
             Card {
                 let s = m.status
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: Space.m) {
                 switchRow(L("换号后自动恢复对话", "Restore chats automatically after a switch"),
                           L("检测到换号后倒数 10 秒自动恢复（Claude 会重启），期间可以取消。关掉后改为弹窗询问。",
                             "After a switch, restores on its own after a 10-second countdown (Claude restarts); you can cancel. Off: ask first."),
@@ -1461,11 +1548,11 @@ struct ContentView: View {
                           }))
                 }
             }
-            Text(L("提醒", "Reminders")).font(.headline).padding(.top, 2)
+            Text(L("提醒", "Reminders")).font(TypeScale.section).padding(.bottom, -Space.m)
             remindersCard
             exactModeCard
             Card {
-                HStack(spacing: 12) {
+                HStack(spacing: Space.m) {
                     Image(systemName: "folder").font(.system(size: 18)).foregroundStyle(brand)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(L("保险库", "Vault"))
@@ -1476,14 +1563,15 @@ struct ContentView: View {
                     Text(ByteCountFormatter.string(fromByteCount: Int64(m.status?.vaultBytes ?? 0), countStyle: .file))
                         .foregroundStyle(.secondary)
                     Button(L("在访达中打开", "Show in Finder")) { NSWorkspace.shared.open(URL(fileURLWithPath: vaultDir)) }
+                        .buttonStyle(.secondary)
                 }
             }
             Card {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: Space.m) {
+                    HStack(spacing: Space.m) {
                         Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 44, height: 44)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(L("Claude 换号助手", "Session Keeper for Claude")).font(.headline)
+                            Text(L("Claude 换号助手", "Session Keeper for Claude")).font(TypeScale.section)
                             Text(L("版本 ", "Version ") + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
@@ -1521,19 +1609,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let path = env["CSV_SNAPSHOT"] else { return }
         let dark = env["CSV_DARK"] != nil
         NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.windows.first?.makeKeyAndOrderFront(nil)
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            // CSV_SNAPSHOT_SCALE=2 renders at Retina resolution (README screenshots)
+            let scale = CGFloat(Double(env["CSV_SNAPSHOT_SCALE"] ?? "1") ?? 1)
             if let w = NSApp.windows.first, let v = w.contentView?.superview ?? w.contentView,
-               let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
-                v.cacheDisplay(in: v.bounds, to: rep)
-                let img = NSImage(size: v.bounds.size)
-                img.lockFocus()
+               let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(v.bounds.width * scale),
+                                          pixelsHigh: Int(v.bounds.height * scale), bitsPerSample: 8,
+                                          samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) {
+                rep.size = v.bounds.size
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
                 (dark ? NSColor(white: 0.16, alpha: 1) : NSColor(white: 0.96, alpha: 1)).setFill()
                 NSRect(origin: .zero, size: v.bounds.size).fill()
-                rep.draw(in: NSRect(origin: .zero, size: v.bounds.size))
-                img.unlockFocus()
-                if let tiff = img.tiffRepresentation, let out = NSBitmapImageRep(data: tiff) {
-                    try? out.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-                }
+                NSGraphicsContext.restoreGraphicsState()
+                v.cacheDisplay(in: v.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
             }
             NSApp.terminate(nil)
         }

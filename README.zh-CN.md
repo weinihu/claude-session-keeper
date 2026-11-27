@@ -73,6 +73,8 @@ Windows 版刚做出来，还没有在各种 Claude 桌面版安装方式上都�
 
 ## 各账号额度
 
+<p align="center"><img src="docs/screenshot-usage-zh.png" width="720" alt="各账号额度"></p>
+
 Claude App 会把当前登录账号的用量（5 小时额度百分比和每周额度百分比）记在 `~/Library/Application Support/Claude/plan-usage-history.json` 里。本工具读取这个文件，把更长的历史存进保险库，再把所有账号并排显示出来：
 
 - **只有当前登录的账号会更新。** 其他账号显示的是你最后一次用它时的情况。如果离那时已经超过 5 小时，5 小时额度会显示为"应已恢复"（估计）。
