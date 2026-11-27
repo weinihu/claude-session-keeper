@@ -1692,7 +1692,7 @@ LIVE_STATUS = os.path.join(VAULT, "live-status.json")
 USAGE_URL = os.environ.get("CSV_USAGE_URL") or "https://api.anthropic.com/api/oauth/usage"
 LIVE_INTERVAL = 10 * 60 * 1000
 LIVE_DAILY_CAP = 60
-TOOL_VERSION = "1.2.0"
+TOOL_VERSION = "1.2.1"
 
 
 def _cli_credentials():

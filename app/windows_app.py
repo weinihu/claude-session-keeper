@@ -24,7 +24,7 @@ APPDATA = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
 SETTINGS_DIR = APPDATA / "SessionKeeper"
 PATHS_FILE = SETTINGS_DIR / "paths.json"
 INSTALL_FILE = SETTINGS_DIR / "install.json"
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 GITHUB_URL = "https://github.com/weinihu/claude-session-keeper"
 AD_URL = "https://tutu8.shop"
 

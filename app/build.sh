@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 ROOT=".."
 NAME="Session Keeper for Claude"
 APP="build/$NAME.app"
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.2.1}"
 
 rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 for arch in arm64 x86_64; do
